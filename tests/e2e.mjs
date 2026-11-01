@@ -11,6 +11,9 @@ import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
 import { fileURLToPath } from 'node:url';
+import { SMTPServer } from 'smtp-server';
+import { simpleParser } from 'mailparser';
+import nodemailer from 'nodemailer';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -23,12 +26,29 @@ const src = fs.readFileSync(path.join(root, 'public/js/crypto.js'), 'utf8');
 const seal = (await import('data:text/javascript;base64,' + Buffer.from(src).toString('base64'))).crypto;
 
 // ---- a private server for this run ----
-const port = await new Promise((resolve) => {
-  const probe = net.createServer().listen(0, () => {
+const freePort = () => new Promise((resolve) => {
+  const probe = net.createServer().listen(0, '127.0.0.1', () => {
     const { port: p } = probe.address();
     probe.close(() => resolve(p));
   });
 });
+const port = await freePort();
+const smtpInPort = await freePort();
+
+// "The outside world": an SMTP server standing in for Gmail's, catching whatever the
+// app sends to external addresses.
+const outsideMail = [];
+const outside = new SMTPServer({
+  authOptional: true,
+  disabledCommands: ['AUTH', 'STARTTLS'],
+  logger: false,
+  onData(stream, session, cb) {
+    simpleParser(stream).then((mail) => { outsideMail.push(mail); cb(); }, cb);
+  },
+});
+const outsidePort = await freePort();
+await new Promise((resolve) => outside.listen(outsidePort, '127.0.0.1', resolve));
+
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sealed-mail-test-'));
 const server = spawn(process.execPath, [path.join(root, 'server/index.js')], {
   env: {
@@ -41,6 +61,15 @@ const server = spawn(process.execPath, [path.join(root, 'server/index.js')], {
     NODE_ENV: 'development',
     RP_ID: 'localhost',
     ORIGIN: `http://localhost:${port}`,
+    MAIL_DOMAIN: 'sealed.local',
+    SMTP_IN_HOST: '127.0.0.1',
+    SMTP_IN_PORT: String(smtpInPort),
+    SMTP_OUT_HOST: '127.0.0.1',
+    SMTP_OUT_PORT: String(outsidePort),
+    SMTP_OUT_SECURE: 'false',
+    SMTP_OUT_USER: '',
+    SMTP_OUT_PASS: '',
+    SMTP_OUT_FROM: '',
   },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
@@ -49,7 +78,9 @@ process.on('exit', () => { server.kill(); fs.rmSync(tmp, { recursive: true, forc
 let serverErr = '';
 server.stderr.on('data', (d) => { serverErr += d; });
 await new Promise((resolve, reject) => {
-  server.stdout.on('data', (d) => { if (String(d).includes('listening')) resolve(); });
+  // ready once both the web app and the inbound mail server are listening
+  let out = '';
+  server.stdout.on('data', (d) => { out += d; if (out.includes('listening') && out.includes('receiving mail')) resolve(); });
   server.on('exit', (code) => reject(new Error(`server exited early (${code}): ${serverErr}`)));
   setTimeout(() => reject(new Error('server did not start within 10 s')), 10000);
 });
@@ -323,5 +354,69 @@ assert.match(badJson.headers.get('content-type') || '', /application\/json/);
 assert.ok(!(await badJson.text()).includes('at '), 'no stack trace');
 ok('malformed JSON gets a short JSON 400, never an HTML stack trace');
 
+// ---------- real email: in from outside, out to outside ----------
+const fromOutside = nodemailer.createTransport({ host: '127.0.0.1', port: smtpInPort, secure: false, ignoreTLS: true });
+const marker = `marca-${randomBytes(6).toString('hex')}`;
+
+await fromOutside.sendMail({
+  from: 'amiga@gmail.com', to: bobEmail, subject: 'Desde Gmail',
+  text: `Hola Bob, te escribo desde fuera. ${marker}`,
+});
+// Bob's last recovery (above) closed every session he had, so he signs in again.
+const BF = makeClient();
+const bobFinal = await login(BF, bobEmail, 'final-password-after-rotation');
+const bobInbox = await BF.req('GET', '/api/messages?box=inbox');
+assert.equal(bobInbox.status, 200, 'bob inbox -> ' + bobInbox.status);
+const ext = bobInbox.data.messages.find((m) => m.external === 1);
+assert.ok(ext, 'the outside mail is in the inbox, flagged external');
+assert.equal(ext.sender, 'amiga@gmail.com');
+const extContent = await seal.decryptBody(await seal.unwrapMessageKey(ext.encKey, bobFinal.privKey), ext.ciphertext, ext.iv);
+assert.equal(extContent.subject, 'Desde Gmail');
+assert.ok(extContent.body.includes(marker));
+ok('mail from outside (SMTP) lands in the inbox, decryptable only with the recipient key');
+
+// The plaintext must never have been written: scan the database files for the marker.
+const dbBytes = fs.readdirSync(tmp).filter((f) => f.startsWith('test.db'))
+  .map((f) => fs.readFileSync(path.join(tmp, f)).toString('latin1')).join('');
+assert.ok(dbBytes.length > 0, 'database files were read');
+assert.ok(!dbBytes.includes(marker) && !dbBytes.includes('te escribo desde fuera'), 'plaintext found in the database!');
+ok('incoming mail is sealed in memory: its text is nowhere in the database files');
+
+await assert.rejects(fromOutside.sendMail({ from: 'x@gmail.com', to: 'nadie@sealed.local', subject: 's', text: 't' }),
+  (err) => err.responseCode === 550, 'unknown local user must be refused');
+await assert.rejects(fromOutside.sendMail({ from: 'x@gmail.com', to: 'victima@yahoo.com', subject: 's', text: 't' }),
+  (err) => err.responseCode === 554, 'relaying to another domain must be refused');
+ok('inbound SMTP refuses unknown users (550) and relaying to other domains (554): not an open relay');
+
+// Out: Alice writes to someone outside. The outside server must get the real message,
+// and Alice keeps only her own encrypted copy.
+const outBody = `Te escribo desde Sealed Mail. ${marker}-out`;
+const alicePubKey = await seal.importPublicKey(alice.pubKeyB64);
+const outSealed = await seal.encryptBody({ from: alice.email, to: ['amiga@gmail.com'], subject: 'Hola desde Sealed', body: outBody });
+const selfCopy = { ciphertext: outSealed.ciphertext, iv: outSealed.iv, encKey: await seal.wrapMessageKey(outSealed.messageKey, alicePubKey) };
+const sent = await A2.req('POST', '/api/messages/external', { to: 'amiga@gmail.com', subject: 'Hola desde Sealed', body: outBody, selfCopy });
+assert.equal(sent.status, 200, 'external send -> ' + JSON.stringify(sent.data));
+const caught = outsideMail.find((m) => m.subject === 'Hola desde Sealed');
+assert.ok(caught, 'the outside mail server received it');
+assert.equal(caught.from.value[0].address, alice.email);
+assert.ok(caught.text.includes(outBody));
+const aliceSent = (await A2.req('GET', '/api/messages?box=sent')).data.messages.find((m) => m.external === 1);
+const aliceCopy = await seal.decryptBody(await seal.unwrapMessageKey(aliceSent.encKey, alice.privKey), aliceSent.ciphertext, aliceSent.iv);
+assert.equal(aliceCopy.body, outBody);
+ok('mail to an outside address is delivered by SMTP, and the Sent copy is stored encrypted');
+
+assert.equal((await A2.req('POST', '/api/messages/external', { to: bobEmail, subject: 's', body: 'b', selfCopy })).status, 400);
+assert.equal((await A2.req('POST', '/api/messages/external', { to: 'a@gmail.com', subject: 'x\r\nBcc: v@evil.com', body: 'b', selfCopy })).status, 400);
+assert.equal((await A2.req('POST', '/api/messages/external', { to: 'a@gmail.com', subject: 's', body: 'b', selfCopy }, { csrf: false })).status, 403);
+ok('external send refuses internal addresses, header injection (CR/LF) and missing CSRF');
+
+const wrongDomain = await makeClient().req('POST', '/api/register', {
+  email: 'pepe@gmail.com', saltAuth: 'ab', saltWrap: 'ab', authKey: 'ab', pubKey: 'QUJD', encPrivKey: 'QUJD', privIv: 'QUJD',
+  recovery: { saltAuth: 'ab', saltWrap: 'ab', authKey: 'ab', encPrivKey: 'QUJD', privIv: 'QUJD' },
+});
+assert.equal(wrongDomain.status, 400);
+ok('accounts can only be created on the mail domain (no claiming a gmail.com address)');
+
+outside.close();
 console.log(`\nALL ${passed} CHECKS PASSED`);
 process.exit(0); // the child server keeps the event loop alive; the exit hook cleans up

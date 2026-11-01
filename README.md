@@ -1,27 +1,16 @@
 # Sealed Mail
 
-Self-hosted webmail where **the server only ever stores ciphertext**. Messages are
-encrypted in the browser; the server never sees a message body, a private key or a
-password, so there is nothing on it worth reading, leaking or training a model on.
+Your own webmail, where **the server only ever stores ciphertext**. Write to anyone
+(Gmail, Outlook, any address) and receive mail like any email service, with one
+difference: nothing stored on the server can be read by the server, so there is
+nothing on it worth reading, leaking or training a model on.
 
-**[Play the server →](https://nacho995.github.io/sealed-mail/)**: an interactive demo
-where *you* are the server holding Alice's mail to Bob, and you try to read it. It
-runs the app's own crypto module in your browser. The demo UI is in Spanish.
-
-[![The demo: you swap Bob's public key for yours and read the message, while the fingerprints on both sides stop matching](docs/images/demo-swap-the-key.jpg)](https://nacho995.github.io/sealed-mail/)
-
-## Five attacks you can run in the demo
-
-| Step | You try to… | What happens | Why |
-|---|---|---|---|
-| 1. Listen | read what you store | random-looking bytes, different on every keystroke | each message gets a fresh AES-256-GCM key and IV; only Bob's browser holds the key that opens it |
-| 2. Tamper | flip one bit before delivering | Bob rejects the whole message | AES-GCM authenticates the ciphertext |
-| 3. Swap the key | hand Alice your public key instead of Bob's | **it works**: you read it and re-seal it for Bob | encryption alone cannot stop a lying key server; the defence is comparing fingerprints, which the demo shows mismatching |
-| 4. Brute-force | dictionary-attack Bob's password-wrapped key | a weak password falls live; a random one would take ~10⁶ years on 1 000 GPUs | 310 000 rounds of PBKDF2 per guess, measured in your browser |
-| 5. Guess the recovery code | try random codes | nothing, ever | 160 random bits |
-
-Step 3 is deliberate: it is a real limitation of every web-delivered end-to-end
-system, and pretending otherwise would be the dishonest part.
+- **Between Sealed Mail users**: end-to-end encrypted. Messages are encrypted in the
+  sender's browser and opened only in the recipient's.
+- **With everyone else** (ordinary email over SMTP): mail that arrives is sealed with
+  your key the moment it is received, so only ciphertext is ever written; mail you
+  send out leaves as a normal email (the other side cannot read anything else), the
+  app warns you before sending, and your Sent copy is stored encrypted.
 
 ## The app
 
@@ -29,6 +18,12 @@ system, and pretending otherwise would be the dishonest part.
 |---|---|---|
 | ![Sign-in page: the headline is encrypted live and shown inside an envelope window](docs/images/app-sign-in.jpg) | ![Inbox with an unreadable message drawn as a sealed envelope and a spoofed sender flagged](docs/images/app-inbox.jpg) | ![Security panel: key fingerprint, recovery code, passkeys, sessions](docs/images/app-security.jpg) |
 
+- **Write to any address.** Sealed Mail recipients get end-to-end encryption; any
+  other address gets an ordinary email through your SMTP relay (Mailpit locally,
+  SendGrid or any SMTP provider for real delivery).
+- **Receive from anyone.** A built-in SMTP server accepts mail for your accounts
+  only (never an open relay), seals it on arrival and flags it "from outside,
+  sender not verified", because ordinary email cannot prove who sent it.
 - Register and log in with a password; a **recovery code** shown once at sign-up.
 - **Face ID / Touch ID / security keys** through WebAuthn passkeys with the PRF
   extension: the biometric never leaves the device, the unlock secret never reaches
@@ -71,6 +66,7 @@ secret that never leaves his side:
 | | |
 |---|---|
 | Read stored mail | **No**: ciphertext only |
+| Read mail exchanged with outside addresses | **In transit, yes**: ordinary email is plaintext by nature, so the server holds it in memory while delivering or sealing it. It is never written in the clear |
 | Alter a message unnoticed | **No**: AES-GCM authentication |
 | Learn passwords | **No**: it receives a PBKDF2-derived key and stores `scrypt` of it |
 | Tell which addresses have accounts | **Partly**: login, recovery and passkey sign-in give constant-shape answers (fake salts, usernameless passkeys), but sign-up says when an address is taken and logged-in users can look up recipients |
@@ -80,6 +76,25 @@ secret that never leaves his side:
 
 The full threat model, every hardening measure and the honest limitations are in
 [`docs/SECURITY.md`](docs/SECURITY.md).
+
+## Interactive demo: how the encryption holds up
+
+**[Play the server →](https://nacho995.github.io/sealed-mail/)** is a side page that
+explains the encryption: *you* are the server holding Alice's mail to Bob, and you
+try to read it, using the app's own crypto module in your browser (UI in Spanish).
+
+| Step | You try to… | What happens | Why |
+|---|---|---|---|
+| 1. Listen | read what you store | random-looking bytes, different on every keystroke | each message gets a fresh AES-256-GCM key and IV; only Bob's browser holds the key that opens it |
+| 2. Tamper | flip one bit before delivering | Bob rejects the whole message | AES-GCM authenticates the ciphertext |
+| 3. Swap the key | hand Alice your public key instead of Bob's | **it works**: you read it and re-seal it for Bob | encryption alone cannot stop a lying key server; the defence is comparing fingerprints, which the demo shows mismatching |
+| 4. Brute-force | dictionary-attack Bob's password-wrapped key | a weak password falls live; a random one would take ~10⁶ years on 1 000 GPUs | 310 000 rounds of PBKDF2 per guess, measured in your browser |
+| 5. Guess the recovery code | try random codes | nothing, ever | 160 random bits |
+
+Step 3 is deliberate: it is a real limitation of every web-delivered end-to-end
+system, and pretending otherwise would be the dishonest part.
+
+[![The demo: you swap Bob's public key for yours and read the message, while the fingerprints on both sides stop matching](docs/images/demo-swap-the-key.jpg)](https://nacho995.github.io/sealed-mail/)
 
 ## How it was built
 
@@ -106,8 +121,48 @@ node -e "const fs=require('fs');const s=require('crypto').randomBytes(32).toStri
 npm start
 ```
 
-Open http://localhost:3000, create two accounts in two private windows and write
-between them.
+Open http://localhost:3000/ and create an account (your address will be
+`nombre@sealed.local`). From there you can write to anyone.
+
+### Email with the outside world
+
+Out of the box everything stays on your machine. Outgoing mail is caught by Mailpit
+(web inbox at http://localhost:8025/):
+
+```bash
+brew install mailpit && mailpit
+```
+
+To simulate someone outside writing to you (as another mail server would):
+
+```bash
+npm run mail:test -- nombre@sealed.local "Hola" "Escrito desde fuera"
+```
+
+**Sending for real (to any Gmail, Outlook… address) with SendGrid**, no domain needed:
+
+1. In SendGrid, *Settings → Sender Authentication → Single Sender Verification*:
+   verify an address you own (for example your Gmail).
+2. *Settings → API Keys*: create a key with the **Mail Send** permission only.
+3. Run `npm run setup:sendgrid` in your terminal. It asks for the verified address and
+   the key (the key is not shown while you type), checks the key with SendGrid,
+   writes `.env` with permissions 600 and can send you a test email. Or edit `.env`
+   by hand (never commit it), replacing the two `SMTP_OUT_*` lines with:
+   ```
+   SMTP_OUT_HOST=smtp.sendgrid.net
+   SMTP_OUT_PORT=587
+   SMTP_OUT_USER=apikey
+   SMTP_OUT_PASS=<your API key>
+   SMTP_OUT_FROM=<the address you verified>
+   ```
+4. Restart. Mail now goes out from the verified address, showing your Sealed Mail
+   name, and replies arrive at that address. The connection to the relay must use
+   TLS: the app refuses to send in clear text to any relay other than localhost.
+
+Without a domain of your own, deliverability is limited (a gmail.com sender sent
+through SendGrid may land in spam). **Receiving mail from the internet** needs a
+domain whose MX record points at this server, with the SMTP port exposed over TLS;
+set `MAIL_DOMAIN` to it and the same code handles it.
 
 ### Face ID / Touch ID
 
@@ -129,9 +184,11 @@ npm test
 ```
 
 Starts the real server on a free port with a throwaway database, then drives it with
-the real browser crypto module: sending and decrypting, recovery (including two
-simultaneous recoveries racing for the same code), password re-checks, passkey
-defences, session revocation and error handling. CI runs it on Node 22 and 24.
+the real browser crypto module: sending and decrypting, real SMTP in and out (with a
+stand-in outside mail server, a byte-level check that incoming plaintext never
+reaches the database, and open-relay refusal), recovery (including two simultaneous
+recoveries racing for the same code), password re-checks, passkey defences, session
+revocation and error handling. CI runs it on Node 22 and 24.
 
 ### The demo locally
 
@@ -141,15 +198,17 @@ node demo/build.mjs   # assembles _site/ from demo/ plus the app's crypto, CSS a
 
 ## Out of scope (for now)
 
-- **Mail to and from the outside world** (Gmail, Outlook…), which needs SMTP/IMAP,
-  a domain and SPF/DKIM/DMARC. Sealed Mail is a closed system between users of one
-  instance.
-- Attachments, threads, search over encrypted bodies, forward secrecy.
+- **Receiving from the internet** needs a domain (MX record) and the SMTP port
+  exposed with TLS; sending already works through any relay.
+- Attachments (incoming ones are dropped with a note), HTML mail (shown as text),
+  threads, search over encrypted bodies, forward secrecy.
 
 ## Layout
 
 ```
-server/        Express app: auth, recovery, passkeys, mail, rate limits, CSP
+server/        Express app: auth, recovery, passkeys, mail, rate limits, CSP,
+               SMTP in (smtp-in.js) and out (smtp-out.js)
+scripts/       send-test-mail.mjs: "someone outside writes to you"
 public/        the web app (no inline scripts); js/crypto.js holds ALL cryptography
 demo/          "play the server" (built to GitHub Pages)
 tests/e2e.mjs  end-to-end test suite

@@ -10,6 +10,8 @@ const auth = require('./auth');
 const mail = require('./mail');
 const recovery = require('./recovery');
 const passkey = require('./passkey');
+const smtpOut = require('./smtp-out');
+const { startInboundSmtp } = require('./smtp-in');
 
 const app = express();
 app.disable('x-powered-by');
@@ -75,9 +77,13 @@ const limit = {
   // Per-account caps on the guessing surfaces, independent of how many IPs try.
   recoverAccount: limitBy(10, (req) => 'acct:' + String((req.body && req.body.email) || '').toLowerCase()),
   sudoAccount: limitBy(10, (req) => 'user:' + req.user.id), // mounted after requireAuth
+  // Mail that leaves the system: capped per account so a hijacked session cannot be
+  // turned into a spam cannon that gets the domain blacklisted.
+  outbound: limitBy(30, (req) => 'out:' + req.user.id),     // mounted after requireAuth
 };
 
 // Public auth endpoints.
+app.get('/api/config', limit.api, auth.publicConfig);
 app.get('/api/salt', limit.salt, auth.saltLookup);
 app.post('/api/register', limit.register, auth.register);
 app.post('/api/login', limit.login, auth.login);
@@ -89,6 +95,8 @@ app.get('/api/pubkey', limit.api, auth.requireAuth, mail.pubkeyLookup);
 app.get('/api/messages', limit.api, auth.requireAuth, mail.list);
 app.post('/api/messages', limit.api, auth.requireAuth, auth.requireCsrf, mail.send);
 app.post('/api/messages/:id/read', limit.api, auth.requireAuth, auth.requireCsrf, mail.read);
+// Ordinary email to an address outside Sealed Mail (see smtp-out.js).
+app.post('/api/messages/external', limit.api, auth.requireAuth, limit.outbound, auth.requireCsrf, smtpOut.sendExternal);
 app.post('/api/sessions/revoke-others', limit.api, auth.requireAuth, auth.requireCsrf, auth.revokeOtherSessions);
 
 // Account recovery with the recovery code.
@@ -131,3 +139,6 @@ app.listen(config.port, () => {
   // eslint-disable-next-line no-console
   console.log(`sealed-mail listening on http://localhost:${config.port} (${config.isProd ? 'production' : 'development'})`);
 });
+
+// Real email in: other mail servers (or any mail client) deliver to our addresses here.
+startInboundSmtp();

@@ -6,7 +6,7 @@ const insertMessage = db.prepare('INSERT INTO messages (sender_email, ciphertext
 const insertRecipient = db.prepare('INSERT INTO message_recipients (message_id,user_id,box,enc_key,read_flag) VALUES (?,?,?,?,0)');
 const listBox = db.prepare(`
   SELECT m.id AS id, m.sender_email AS sender, m.ciphertext AS ciphertext, m.iv AS iv,
-         m.created_at AS createdAt, r.enc_key AS encKey, r.read_flag AS read
+         m.created_at AS createdAt, r.enc_key AS encKey, r.read_flag AS read, m.external AS external
   FROM message_recipients r JOIN messages m ON m.id = r.message_id
   WHERE r.user_id = ? AND r.box = ?
   ORDER BY m.created_at DESC
