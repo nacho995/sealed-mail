@@ -1,5 +1,6 @@
 const db = require('./db');
 const config = require('./config');
+const attachments = require('./attachments');
 
 const getUserByEmail = db.prepare('SELECT id, email, pub_key FROM users WHERE email = ?');
 const insertMessage = db.prepare('INSERT INTO messages (sender_email, ciphertext, iv, created_at) VALUES (?,?,?,?)');
@@ -31,6 +32,9 @@ function send(req, res) {
   if (!isB64(ciphertext, L.ciphertextBytes) || !isB64(iv, 64) || !isB64(selfEncKey, L.encKeyB64)) {
     return res.status(400).json({ error: 'invalid message payload' });
   }
+  const files = attachments.parseSealed((req.body || {}).attachments);
+  if (!files) return res.status(400).json({ error: 'invalid attachments' });
+  if (attachments.overQuota(req.user.id, files)) return res.status(413).json({ error: 'attachment quota exceeded' });
   if (!Array.isArray(recipients) || recipients.length < 1 || recipients.length > L.recipients) {
     return res.status(400).json({ error: 'invalid recipient list' });
   }
@@ -52,6 +56,7 @@ function send(req, res) {
     for (const { user, encKey } of resolved) {
       insertRecipient.run(messageId, user.id, 'inbox', encKey);
     }
+    attachments.store(messageId, files);
     return messageId;
   });
   res.json({ ok: true, id: Number(tx()) });

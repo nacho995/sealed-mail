@@ -83,6 +83,18 @@ CREATE TABLE IF NOT EXISTS passkeys (
 );
 CREATE INDEX IF NOT EXISTS idx_passkeys_user ON passkeys(user_id);
 
+-- One row per attached file: AES-GCM ciphertext under the message's key. Its name,
+-- type, size and hash are inside the message's encrypted body, not here.
+CREATE TABLE IF NOT EXISTS attachments (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  message_id  INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  idx         INTEGER NOT NULL,  -- position in the body's attachment list
+  ciphertext  BLOB NOT NULL,
+  iv          TEXT NOT NULL,
+  bytes       INTEGER NOT NULL,  -- ciphertext length, for the per-account quota
+  UNIQUE (message_id, idx)
+);
+
 -- Inbound messages already taken from a provider (Resend), so each is sealed once.
 CREATE TABLE IF NOT EXISTS inbound_seen (
   provider_id TEXT PRIMARY KEY,

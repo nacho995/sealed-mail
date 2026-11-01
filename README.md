@@ -13,34 +13,30 @@ nothing on it worth reading, leaking or training a model on.
   app warns you before sending, and your Sent copy is stored encrypted.
 
 > [!IMPORTANT]
-> **Pending: email with the outside world is not live yet.** The code is finished
-> and tested (SMTP in and out, sending through Resend or SendGrid, receiving polled
-> from Resend: 33 end-to-end checks). What is missing is infrastructure, not code.
-> Real delivery needs **a domain you own whose DNS points at the mail provider**, and
-> for this deployment those DNS records were never added. As things stand:
+> **Sending to anyone works; receiving from the internet is still pending.**
 >
 > | | Status |
 > |---|---|
-> | Mail between Sealed Mail users (end-to-end encrypted) | ✅ works |
-> | Writing to / receiving from Gmail, Outlook… **on your machine** (Mailpit, `npm run mail:test`) | ✅ works |
-> | Writing to / receiving from Gmail, Outlook… **over the internet** | ❌ **not active: needs a verified domain** |
+> | Mail between Sealed Mail users (end-to-end encrypted, with attachments) | ✅ works |
+> | Writing to any Gmail, Outlook… address over the internet, through your own Gmail account (`npm run setup:gmail`, no domain needed) | ✅ works |
+> | Writing to / receiving from outside addresses **on your machine** (Mailpit, `npm run mail:test`) | ✅ works |
+> | Receiving from Gmail, Outlook… **over the internet** | ❌ **not active: needs a domain you own** |
 >
-> To turn it on:
-> 1. Add a domain or subdomain you own in Resend, with sending and receiving enabled
->    (a subdomain such as `mail.example.com` keeps your existing mailboxes untouched).
-> 2. Create the DNS records Resend lists (DKIM TXT, SPF MX + TXT, return-path
->    CNAME, inbound MX) at your DNS provider, and verify the domain in Resend.
+> Receiving is written and tested (inbound SMTP, and polling Resend's receiving API).
+> What is missing is infrastructure: **a domain whose MX record points at the mail
+> provider**. To turn it on:
+> 1. Add a domain or subdomain you own in Resend, with receiving enabled (a subdomain
+>    such as `mail.example.com` keeps your existing mailboxes untouched).
+> 2. Create the DNS records Resend lists at your DNS provider and verify the domain.
 > 3. Set the Resend block of `.env.example` in your `.env` and restart.
 >
-> To only *send* without a domain, `npm run setup:gmail` sends through your own Gmail
-> account (or `npm run setup:sendgrid` through SendGrid's single-sender verification).
-> Replies then go to that mailbox, not to the app.
+> Until then, replies to what you send go to your Gmail inbox, not to the app.
 
 ## The app
 
 | Sign in | Inbox | Security |
 |---|---|---|
-| ![Sign-in page: the headline is typed out, then shown encrypted as an ASCII-armored block](docs/images/app-sign-in.jpg) | ![Inbox as a one-line-per-message index: new mail flagged N, a spoofed sender flagged !, an unverified outside sender flagged ?, an unreadable message shown as cipher](docs/images/app-inbox.jpg) | ![Security panel: key fingerprint, recovery code, passkeys, sessions](docs/images/app-security.jpg) |
+| ![Sign-in: the headline decrypts itself and is shown encrypted as an armored block and an xxd dump, next to the sign-in pane where a kid juggles 0s and 1s](docs/images/app-sign-in.jpg) | ![Folder and open message side by side: new mail flagged N, an unverified outside sender ?, a spoofed sender !, an unreadable message shown as cipher, and an attachment ready to save](docs/images/app-inbox.jpg) | ![Security panel: key fingerprint, recovery code, passkeys, sessions](docs/images/app-security.jpg) |
 
 - **Write to any address.** Sealed Mail recipients get end-to-end encryption; any
   other address gets an ordinary email through your SMTP relay (Mailpit locally,
@@ -52,6 +48,9 @@ nothing on it worth reading, leaking or training a model on.
 - **Face ID / Touch ID / security keys** through WebAuthn passkeys with the PRF
   extension: the biometric never leaves the device, the unlock secret never reaches
   the server.
+- **Attachments**, encrypted in the browser like the text (up to 10 files and 10 MB
+  per message). The reader checks every file against a hash sealed inside the
+  message, so the server cannot swap one.
 - Compose, send, read. Recipient **key fingerprints** for out-of-band verification;
   the sender shown is the one the server authenticated, and a client-claimed
   `from` that disagrees is flagged.
@@ -104,10 +103,16 @@ The full threat model, every hardening measure and the honest limitations are in
 ## How it was built
 
 Built with an agentic workflow: one coding agent implementing, and a separate
-read-only application-security agent auditing the finished code twice without
-sharing the implementer's reasoning. The second audit found a high-severity flaw
-(enrolling a passkey required the password only in the UI, not on the server) which
-was fixed and is now covered by a test, along with every other finding.
+read-only application-security agent auditing each finished feature without sharing
+the implementer's reasoning. Three audits so far:
+
+- The second one found a high-severity flaw: enrolling a passkey required the password
+  only in the UI, not on the server.
+- The third, on attachments, found that mail from outside claiming to be a user could
+  exhaust that user's attachment quota, and that a right-to-left override could make
+  `fdp.exe` display as `.pdf`.
+
+Every finding was fixed and is covered by a test.
 
 ## Run it
 
@@ -217,14 +222,17 @@ the real browser crypto module: sending and decrypting, real SMTP in and out (wi
 stand-in outside mail server, a byte-level check that incoming plaintext never
 reaches the database, and open-relay refusal), recovery (including two simultaneous
 recoveries racing for the same code), password re-checks, passkey defences, session
-revocation and error handling. CI runs it on Node 22 and 24.
+revocation, encrypted attachments (round trip, a stranger gets 404, a swapped or
+substituted file is rejected, limits and quotas, files in and out by SMTP) and error
+handling: 45 checks. CI runs it on Node 22 and 24.
 
 ## Out of scope (for now)
 
 - **Receiving from the internet** needs a domain (MX record) and the SMTP port
-  exposed with TLS; sending already works through any relay.
-- Attachments (incoming ones are dropped with a note), HTML mail (shown as text),
-  threads, search over encrypted bodies, forward secrecy.
+  exposed with TLS, or Resend's receiving API; sending already works through your
+  Gmail or any SMTP relay.
+- HTML mail (shown as text), previews of attached images, threads, search over
+  encrypted bodies, forward secrecy.
 
 ## Layout
 
@@ -240,19 +248,24 @@ docs/          SECURITY.md and README images
 
 ## Design
 
-A terminal mail reader in the spirit of mutt and pine: green P1 phosphor on
-green-black glass, one theme, with faint scanlines and darker corners like a curved
-tube. When you move through a folder, the row you leave fades out like a lit CRT pixel.
-Sign-in and compose fields are inline prompts (`correo:`, `para:`), as at a terminal
-login. The app is driven from the keyboard (`c` write, `e` inbox, `v` sent,
-`s` security, `j`/`k` or arrows to move, Enter to open, `q` or Esc to go back) and
-every key is also a button for touch screens. A status bar always says where you are
-and which keys work there. Each folder is a one-line-per-message index whose flag
-column is never truncated, so warnings live there: `N` new, `!` the message claims a
-different sender, `?` from outside and not verified. The sign-in page types its
-headline, then encrypts it in your browser and shows the result ASCII-armored: that
-block is all the server ever sees.
+A professional security console, in the spirit of the tools people who do security
+work use every day: tmux-style panes with their title in the border, a powerline
+status bar, keys shown as keycaps, steel grey on navy. Colour is kept for meaning:
+signal green for the one thing to act on (the main button, the pane you are in, new
+mail), teal for ciphertext, amber for "not verified", red for spoofed.
 
-Type: **VT323** for titles and the bars, **Atkinson Hyperlegible Mono** for everything
-else, designed so `0/O` and `l/1/I` cannot be confused in recovery codes and
-fingerprints. All fonts are SIL Open Font License 1.1, self-hosted.
+The app is driven from the keyboard (`c` write, `e` inbox, `v` sent, `s` security,
+`a` attach, `j`/`k` or arrows to move, Enter to open, `q` or Esc to go back), and every
+key is also a button for touch screens. On a wide screen an open message sits beside
+its folder, as in mutt. The flag column is never truncated, so warnings live there:
+`N` new, `!` the message claims a different sender, `?` from outside and not verified.
+
+The motion always shows something real: the headline decrypts itself and is then
+encrypted in your browser (shown as an armored block and an `xxd` dump, with the
+measured time); a message crumbles into ciphertext as you send it; an opened letter
+decrypts on screen. A kid juggling 0s and 1s keeps the sign-in and an empty inbox
+company. All of it stops for anyone who asks for reduced motion.
+
+Type: **Martian Mono** for titles, labels and bars, **Atkinson Hyperlegible Mono** for
+everything you read, designed so `0/O` and `l/1/I` cannot be confused in recovery
+codes and fingerprints. All fonts are SIL Open Font License 1.1, self-hosted.

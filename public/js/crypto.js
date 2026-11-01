@@ -17,7 +17,8 @@ const dec = new TextDecoder();
 function bufToB64(buf) {
   const bytes = new Uint8Array(buf);
   let bin = '';
-  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  // 32 KB at a time: fast for attachments, and below the engine's argument limit
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
   return btoa(bin);
 }
 function b64ToBuf(b64) {
@@ -151,10 +152,38 @@ async function unwrapMessageKey(encKeyB64, myPriv) {
   return subtle.importKey('raw', raw, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
 }
 
+// ---- attachments ----
+// Each file is encrypted under the message key with a fresh IV and its position as
+// additional data, so a file cannot be passed off as another one or as the body.
+// The body carries { name, type, size, sha256 } for every file; the reader checks the
+// decrypted bytes against it, so the server cannot substitute a file either.
+const attachmentAad = (i) => enc.encode(`sealed-mail attachment ${i}`);
+
+async function describeFile(name, type, bytes) {
+  return { name, type, size: bytes.byteLength, sha256: bufToHex(await subtle.digest('SHA-256', bytes)) };
+}
+async function encryptAttachment(messageKey, bytes, index) {
+  const iv = window.crypto.getRandomValues(new Uint8Array(12));
+  const ct = await subtle.encrypt({ name: 'AES-GCM', iv, additionalData: attachmentAad(index) }, messageKey, bytes);
+  return { ciphertext: bufToB64(ct), iv: bufToB64(iv) };
+}
+// Throws when the bytes are not exactly the file the body describes.
+async function decryptAttachment(messageKey, ctB64, ivB64, index, expected) {
+  const pt = await subtle.decrypt(
+    { name: 'AES-GCM', iv: new Uint8Array(b64ToBuf(ivB64)), additionalData: attachmentAad(index) },
+    messageKey, b64ToBuf(ctB64));
+  if (!expected || pt.byteLength !== expected.size || bufToHex(await subtle.digest('SHA-256', pt)) !== expected.sha256) {
+    throw new Error('attachment does not match the message');
+  }
+  return pt;
+}
+
 export const crypto = {
   randomHex, authKeyHex, wrapKey,
   generateIdentity, exportPublicKey, importPublicKey, fingerprint,
   exportPkcs8, importPrivateKey, encryptPkcs8, decryptPkcs8, decryptPrivateKey, secretBundle,
   generateRecoveryCode, normalizeRecoveryCode, passkeyWrapKey,
   encryptBody, decryptBody, wrapMessageKey, unwrapMessageKey,
+  describeFile, encryptAttachment, decryptAttachment,
+  bufToB64, // plaintext files for outside addresses travel as base64 JSON
 };

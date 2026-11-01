@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <title>Sealed Mail</title>
-<link rel="preload" href="/fonts/vt323.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/fonts/martian-mono-var.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/atkinson-hyperlegible-mono-var.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="/css/styles.css">
 </head>
@@ -17,91 +17,90 @@
   <button id="logoutBtn" class="btn ghost" type="button" hidden>salir</button>
 </header>
 
-<!-- Sign in / create account: a terminal session -->
-<main id="authView" class="page" hidden>
-  <div class="access">
-    <section class="pitch">
-      <p class="tty-line">sealed-mail 0.1 en tty1, cifrado de extremo a extremo</p>
-      <h1 id="heroLine" data-line="Lo que escribes aquí solo lo lee quien lo recibe.">
-        <span class="sr-only">Lo que escribes aquí solo lo lee quien lo recibe.</span>
-        <span id="heroTyped" aria-hidden="true"></span><span class="cursor" aria-hidden="true"></span>
-      </h1>
-      <figure class="envelope">
-        <div class="frame">
-          <pre id="heroCipher" class="window" aria-live="polite">cifrando la frase…</pre>
-        </div>
-        <figcaption>Esa frase, cifrada ahora mismo en este navegador con una clave que no sale de él.
-          Es todo lo que llega a ver el servidor.</figcaption>
-      </figure>
-    </section>
+<!-- Every screen is a tmux-style layout of panes; a pane's title sits in its top
+     border, and the pane you are working in has the lit border. -->
 
-    <div class="sheet access-card">
-      <div class="tabs">
-        <button id="tabLogin" class="tab active" type="button">entrar</button>
-        <button id="tabRegister" class="tab" type="button">crear cuenta</button>
-      </div>
-      <form id="authForm" autocomplete="off">
-        <label class="prompt">correo:
-          <input id="email" type="email" required autocomplete="username" placeholder="nombre@sealed.local">
-        </label>
-        <label class="prompt">contraseña:
-          <input id="password" type="password" required autocomplete="current-password">
-        </label>
-        <p id="pwHint" class="hint" hidden>Mínimo 10 caracteres. Al crear la cuenta recibirás un código de
-          recuperación: junto con la contraseña es la única llave de tus correos.</p>
-        <div class="row"><button id="authSubmit" class="btn primary" type="submit">entrar</button></div>
-        <p id="authError" class="error" role="alert" hidden></p>
-      </form>
-      <div id="authAlt" class="alt">
-        <button id="passkeyLoginBtn" class="btn" type="button">entrar con Face ID o Touch ID</button>
-        <button id="forgotBtn" class="link" type="button">he olvidado la contraseña</button>
-        <p id="altError" class="error" role="alert" hidden></p>
-      </div>
+<!-- Sign in / create account: the session pane and the access pane -->
+<main id="authView" class="screen split" hidden>
+  <section class="pane session" aria-labelledby="sessionTitle">
+    <h2 id="sessionTitle" class="pane-title">sesión</h2>
+    <p class="tty-line">sealed-mail 0.1 en tty1, cifrado de extremo a extremo</p>
+    <h1 id="heroLine" class="hero" data-line="Lo que escribes aquí solo lo lee quien lo recibe.">
+      <span class="sr-only">Lo que escribes aquí solo lo lee quien lo recibe.</span>
+      <span id="heroTyped" aria-hidden="true"></span><span class="cursor" aria-hidden="true"></span>
+    </h1>
+    <!-- what just happened in this browser, measured, as a CLI log -->
+    <ol id="bootLog" class="boot" aria-label="Qué ha pasado en este navegador"></ol>
+    <p class="cmd" aria-hidden="true">seal --once frase.txt</p>
+    <pre id="heroCipher" class="armor" aria-live="polite">cifrando la frase…</pre>
+    <p class="cmd cmd-hex" aria-hidden="true">xxd mensaje.sealed | head -4</p>
+    <pre id="heroHex" class="hexdump" aria-label="Los mismos bytes cifrados, en hexadecimal"></pre>
+  </section>
+
+  <section class="pane access active" aria-labelledby="accessTitle">
+    <h2 id="accessTitle" class="pane-title">acceso</h2>
+    <div class="juggler-slot"></div>
+    <div class="tabs">
+      <button id="tabLogin" class="tab active" type="button">entrar</button>
+      <button id="tabRegister" class="tab" type="button">crear cuenta</button>
     </div>
-  </div>
+    <form id="authForm" autocomplete="off">
+      <label class="prompt">correo:
+        <input id="email" type="email" required autocomplete="username" placeholder="nombre@sealed.local">
+      </label>
+      <label class="prompt">contraseña:
+        <input id="password" type="password" required autocomplete="current-password">
+      </label>
+      <p id="pwHint" class="hint" hidden>Mínimo 10 caracteres. Al crear la cuenta recibirás un código de
+        recuperación: junto con la contraseña es la única llave de tus correos.</p>
+      <div class="row"><button id="authSubmit" class="btn primary" type="submit">entrar</button></div>
+      <p id="authError" class="error" role="alert" hidden></p>
+    </form>
+    <div id="authAlt" class="alt">
+      <button id="passkeyLoginBtn" class="btn" type="button">entrar con Face ID o Touch ID</button>
+      <button id="forgotBtn" class="link" type="button">he olvidado la contraseña</button>
+      <p id="altError" class="error" role="alert" hidden></p>
+    </div>
+  </section>
 </main>
 
 <!-- Recover with the recovery code -->
-<main id="recoverView" class="page" hidden>
-  <div class="narrow">
-    <form id="recoverForm" class="sheet" autocomplete="off">
-      <h2 class="screen-title">recuperar la cuenta</h2>
-      <p class="hint">Escribe el código de recuperación que guardaste al crear la cuenta y elige una contraseña
-        nueva. Conservarás todos tus correos.</p>
-      <label>correo
-        <input id="recEmail" type="email" required autocomplete="username">
-      </label>
-      <label>código de recuperación
-        <input id="recCode" class="exact" type="text" required autocomplete="off" spellcheck="false"
-          autocapitalize="characters" placeholder="ABCD-EFGH-…">
-      </label>
-      <label>contraseña nueva
-        <input id="recNewPw" type="password" required minlength="10" autocomplete="new-password">
-      </label>
-      <div class="row"><button id="recSubmit" class="btn primary" type="submit">comprobar el código</button></div>
-      <p id="recError" class="error" role="alert" hidden></p>
-      <button id="recBack" class="link" type="button">volver a entrar</button>
-    </form>
-  </div>
+<main id="recoverView" class="screen single" hidden>
+  <form id="recoverForm" class="pane active narrow" autocomplete="off">
+    <h2 class="pane-title">recuperar la cuenta</h2>
+    <p class="hint">Escribe el código de recuperación que guardaste al crear la cuenta y elige una contraseña
+      nueva. Conservarás todos tus correos.</p>
+    <label>correo
+      <input id="recEmail" type="email" required autocomplete="username">
+    </label>
+    <label>código de recuperación
+      <input id="recCode" class="exact" type="text" required autocomplete="off" spellcheck="false"
+        autocapitalize="characters" placeholder="ABCD-EFGH-…">
+    </label>
+    <label>contraseña nueva
+      <input id="recNewPw" type="password" required minlength="10" autocomplete="new-password">
+    </label>
+    <div class="row"><button id="recSubmit" class="btn primary" type="submit">comprobar el código</button></div>
+    <p id="recError" class="error" role="alert" hidden></p>
+    <button id="recBack" class="link" type="button">volver a entrar</button>
+  </form>
 </main>
 
 <!-- A freshly generated recovery code, shown once -->
-<main id="codeView" class="page" hidden>
-  <div class="narrow">
-    <div class="sheet">
-      <h2 class="screen-title">guarda tu código de recuperación</h2>
-      <p class="hint">Si olvidas la contraseña, este código es la única forma de volver a entrar sin perder tus
-        correos. Cópialo en papel o en tu gestor de contraseñas. No se volverá a mostrar.</p>
-      <div id="recoveryCode" class="code"></div>
-      <div class="row">
-        <button id="copyCodeBtn" class="btn" type="button">copiar el código</button>
-      </div>
-      <label class="check"><input id="codeSaved" type="checkbox"> lo he guardado en un lugar seguro</label>
-      <div class="row"><button id="codeContinue" class="btn primary" type="button" disabled>continuar</button></div>
-      <p id="codeError" class="error" role="alert" hidden></p>
-      <button id="codeCancel" class="link" type="button" hidden>cancelar y conservar el código anterior</button>
+<main id="codeView" class="screen single" hidden>
+  <section class="pane active narrow" aria-labelledby="codeTitle">
+    <h2 id="codeTitle" class="pane-title">guarda tu código de recuperación</h2>
+    <p class="hint">Si olvidas la contraseña, este código es la única forma de volver a entrar sin perder tus
+      correos. Cópialo en papel o en tu gestor de contraseñas. No se volverá a mostrar.</p>
+    <div id="recoveryCode" class="code"></div>
+    <div class="row">
+      <button id="copyCodeBtn" class="btn" type="button">copiar el código</button>
     </div>
-  </div>
+    <label class="check"><input id="codeSaved" type="checkbox"> lo he guardado en un lugar seguro</label>
+    <div class="row"><button id="codeContinue" class="btn primary" type="button" disabled>continuar</button></div>
+    <p id="codeError" class="error" role="alert" hidden></p>
+    <button id="codeCancel" class="link" type="button" hidden>cancelar y conservar el código anterior</button>
+  </section>
 </main>
 
 <main id="appView" class="app" hidden>
@@ -113,52 +112,70 @@
     <button id="securityBtn" class="navBtn" data-key="s" type="button"><kbd>s</kbd>seguridad</button>
   </nav>
 
-  <section class="content">
-    <div id="listView" class="content-inner">
-      <h2 id="boxTitle" class="panel-title">entrada</h2>
-      <div class="sheet">
-        <ul id="messageList" class="messages" aria-label="Mensajes"></ul>
-        <p id="emptyBox" class="empty" hidden></p>
+  <!-- On a wide screen the folder and the open message sit side by side, as in mutt -->
+  <div class="content">
+    <section id="listView" class="pane folder" aria-labelledby="boxTitle">
+      <h2 id="boxTitle" class="pane-title">entrada</h2>
+      <ul id="messageList" class="messages" aria-label="Mensajes"></ul>
+      <div id="emptyBox" class="empty" hidden>
+        <div class="juggler-slot"></div>
+        <p id="emptyText"></p>
       </div>
-    </div>
+    </section>
 
-    <div id="readView" class="content-inner" hidden>
-      <div class="row"><button id="backBtn" class="btn ghost" type="button">volver a la carpeta</button></div>
-      <article class="sheet reader">
-        <dl class="headers">
-          <dt id="readFromLabel">De</dt><dd id="readFrom"></dd>
-          <dt>Fecha</dt><dd id="readDate"></dd>
-          <dt>Asunto</dt><dd><h3 id="readSubject"></h3></dd>
-        </dl>
-        <p id="readNote" class="hint note-external" hidden></p>
-        <pre id="readBody" class="body"></pre>
-      </article>
-    </div>
+    <article id="readView" class="pane reader" aria-labelledby="readTitle" hidden>
+      <h2 id="readTitle" class="pane-title">mensaje</h2>
+      <button id="backBtn" class="pane-action" type="button">cerrar</button>
+      <dl class="headers">
+        <dt id="readFromLabel">De</dt><dd id="readFrom"></dd>
+        <dt>Fecha</dt><dd id="readDate"></dd>
+        <dt>Asunto</dt><dd><h3 id="readSubject"></h3></dd>
+      </dl>
+      <p id="readNote" class="hint note-external" hidden></p>
+      <pre id="readBody" class="body"></pre>
+      <section id="readFiles" class="read-files" aria-labelledby="readFilesTitle" hidden>
+        <h4 id="readFilesTitle">adjuntos</h4>
+        <ul id="readFileList" class="files"></ul>
+      </section>
+    </article>
 
-    <div id="composeView" class="content-inner" hidden>
-      <h2 class="panel-title">mensaje nuevo</h2>
-      <form id="composeForm" class="sheet compose">
-        <label class="prompt">para:
-          <input id="to" type="email" required placeholder="nombre@sealed.local o cualquier dirección">
-        </label>
-        <p id="recipFp" class="hint" hidden></p>
-        <label class="prompt">asunto:
-          <input id="subject" type="text" maxlength="200">
-        </label>
-        <label>mensaje
-          <textarea id="body" rows="12" placeholder="Se cifra en tu navegador antes de salir."></textarea>
-        </label>
-        <div class="actions">
-          <button id="sendBtn" class="btn primary" type="submit">cifrar y enviar</button>
-          <button id="composeBack" class="btn ghost" type="button">descartar</button>
-        </div>
-        <p id="composeError" class="error" role="alert" hidden></p>
-        <p id="composeOk" class="ok" role="status" hidden>Enviado. Solo el destinatario puede abrirlo.</p>
+    <section id="composeView" class="pane compose" aria-labelledby="composeTitle" hidden>
+      <h2 id="composeTitle" class="pane-title">mensaje nuevo</h2>
+      <!-- shown while sending: the message turns into its ciphertext -->
+      <div id="sealing" class="sealing" hidden>
+        <pre id="sealingText" class="sealing-text" aria-hidden="true"></pre>
+        <span class="meter" aria-hidden="true"><span id="sealingMeter" class="meter-fill"></span></span>
+        <p id="sealingMsg" class="sealing-msg" role="status"></p>
+      </div>
+      <form id="composeForm">
+      <label class="prompt">para:
+        <input id="to" type="email" required placeholder="nombre@sealed.local o cualquier dirección">
+      </label>
+      <p id="recipFp" class="hint" hidden></p>
+      <label class="prompt">asunto:
+        <input id="subject" type="text" maxlength="200">
+      </label>
+      <label>mensaje
+        <textarea id="body" rows="12" placeholder="Se cifra en tu navegador antes de salir."></textarea>
+      </label>
+      <div class="attach">
+        <input id="fileInput" type="file" multiple hidden>
+        <button id="attachBtn" class="btn" type="button">adjuntar archivos</button>
+        <ul id="attachList" class="files" aria-label="Archivos adjuntos"></ul>
+        <span id="attachMeterBox" class="meter" aria-hidden="true" hidden><span id="attachMeter" class="meter-fill"></span></span>
+        <p id="attachInfo" class="hint" role="status" hidden></p>
+      </div>
+      <div class="actions">
+        <button id="sendBtn" class="btn primary" type="submit">cifrar y enviar</button>
+        <button id="composeBack" class="btn ghost" type="button">descartar</button>
+      </div>
+      <p id="composeError" class="error" role="alert" hidden></p>
+      <p id="composeOk" class="ok" role="status" hidden>Enviado. Solo el destinatario puede abrirlo.</p>
       </form>
-    </div>
+    </section>
 
-    <div id="securityView" class="content-inner" hidden>
-      <h2 class="panel-title">seguridad</h2>
+    <section id="securityView" class="pane security" aria-labelledby="securityTitle" hidden>
+      <h2 id="securityTitle" class="pane-title">seguridad</h2>
 
       <!-- Sensitive actions ask for the password again ("sudo mode") -->
       <form id="sudoForm" class="sudo" hidden>
@@ -172,7 +189,7 @@
         <p id="sudoError" class="error" role="alert" hidden></p>
       </form>
 
-      <div class="sheet settings">
+      <div class="settings">
         <section class="setting">
           <h3>tu huella de clave</h3>
           <p class="hint">Quien te escribe ve esta misma huella al poner tu dirección. Si al compararla por otro
@@ -208,15 +225,34 @@
           <p id="sessionsMsg" class="hint" role="status" hidden></p>
         </section>
       </div>
-    </div>
-  </section>
-
-  <!-- Status bar: where you are, and the keys that work here -->
-  <footer class="statusbar" aria-live="polite">
-    <span id="statusText">entrada</span>
-    <span id="statusKeys" class="keys">j/k mover  ↵ abrir  c escribir  s seguridad</span>
-  </footer>
+    </section>
+  </div>
 </main>
+
+<!-- Status bar on every screen: where you are, and the keys that work here -->
+<footer class="statusbar" aria-live="polite">
+  <span id="statusText">sin sesión</span>
+  <span id="statusKeys" class="keys">tab siguiente campo  ↵ entrar</span>
+</footer>
+
+<!-- A kid juggling bits: shown where the screen is waiting for you -->
+<template id="jugglerTpl">
+  <div class="juggler" role="img" aria-label="Un niño haciendo malabares con ceros y unos">
+    <svg viewBox="0 0 120 150" width="120" height="150" aria-hidden="true" focusable="false">
+      <polyline class="j-limb j-leg" points="60,116 51,141 45,141"/>
+      <polyline class="j-limb j-leg" points="60,116 69,141 75,141"/>
+      <line class="j-limb" x1="60" y1="86" x2="60" y2="116"/>
+      <polyline class="j-limb j-arm j-arm-l" points="60,95 45,101 35,86"/>
+      <polyline class="j-limb j-arm j-arm-r" points="60,95 75,101 85,86"/>
+      <circle class="j-head" cx="60" cy="72" r="13"/>
+      <path class="j-limb j-hair" d="M48 67 q4 -10 12 -9 q8 -1 12 9"/>
+      <circle class="j-eye" cx="55" cy="72" r="1.6"/>
+      <circle class="j-eye" cx="65" cy="72" r="1.6"/>
+      <path class="j-limb j-smile" d="M55 78 q5 4 10 0"/>
+    </svg>
+    <span class="bit">0</span><span class="bit">1</span><span class="bit">0</span><span class="bit">1</span>
+  </div>
+</template>
 
 <script type="module" src="/js/app.js"></script>
 </body>

@@ -65,7 +65,7 @@ module.exports = {
     inbound: {
       host: process.env.SMTP_IN_HOST || '127.0.0.1',
       port: Number(process.env.SMTP_IN_PORT) || 2525,
-      maxBytes: 1024 * 1024,
+      maxBytes: 15 * 1024 * 1024, // room for 10 MB of attachments once MIME-encoded
     },
     outbound: {
       host: process.env.SMTP_OUT_HOST || '127.0.0.1',
@@ -93,5 +93,8 @@ module.exports = {
     encKeyB64: 2048,
     recipients: 20,
     emailLen: 254,
+    // Stored attachment bytes per account, counted separately for what it sends and
+    // for what it receives from outside. Overridable so the tests can reach it.
+    attachmentQuotaBytes: Number(process.env.ATTACHMENT_QUOTA_BYTES) || 250 * 1024 * 1024,
   },
 };
