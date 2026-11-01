@@ -12,6 +12,29 @@ nothing on it worth reading, leaking or training a model on.
   send out leaves as a normal email (the other side cannot read anything else), the
   app warns you before sending, and your Sent copy is stored encrypted.
 
+> [!IMPORTANT]
+> **Pending: email with the outside world is not live yet.** The code is finished
+> and tested (SMTP in and out, sending through Resend or SendGrid, receiving polled
+> from Resend: 33 end-to-end checks). What is missing is infrastructure, not code.
+> Real delivery needs **a domain you own whose DNS points at the mail provider**, and
+> for this deployment those DNS records were never added. As things stand:
+>
+> | | Status |
+> |---|---|
+> | Mail between Sealed Mail users (end-to-end encrypted) | ✅ works |
+> | Writing to / receiving from Gmail, Outlook… **on your machine** (Mailpit, `npm run mail:test`) | ✅ works |
+> | Writing to / receiving from Gmail, Outlook… **over the internet** | ❌ **not active: needs a verified domain** |
+>
+> To turn it on:
+> 1. Add a domain or subdomain you own in Resend, with sending and receiving enabled
+>    (a subdomain such as `mail.example.com` keeps your existing mailboxes untouched).
+> 2. Create the DNS records Resend lists (DKIM TXT, SPF MX + TXT, return-path
+>    CNAME, inbound MX) at your DNS provider, and verify the domain in Resend.
+> 3. Set the Resend block of `.env.example` in your `.env` and restart.
+>
+> To only *send* without a domain, `npm run setup:sendgrid` uses SendGrid's
+> single-sender verification instead (replies then go to that address, not to the app).
+
 ## The app
 
 | Sign in | Inbox | Security |
