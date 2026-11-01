@@ -144,7 +144,10 @@ npm run mail:test -- nombre@sealed.local "Hola" "Escrito desde fuera"
 1. In SendGrid, *Settings → Sender Authentication → Single Sender Verification*:
    verify an address you own (for example your Gmail).
 2. *Settings → API Keys*: create a key with the **Mail Send** permission only.
-3. In `.env` (never commit it), replace the two `SMTP_OUT_*` lines with:
+3. Run `npm run setup:sendgrid` in your terminal. It asks for the verified address and
+   the key (the key is not shown while you type), checks the key with SendGrid,
+   writes `.env` with permissions 600 and can send you a test email. Or edit `.env`
+   by hand (never commit it), replacing the two `SMTP_OUT_*` lines with:
    ```
    SMTP_OUT_HOST=smtp.sendgrid.net
    SMTP_OUT_PORT=587

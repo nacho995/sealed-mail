@@ -12,6 +12,7 @@
     "dev": "node --watch server/index.js",
     "demo:build": "node demo/build.mjs",
     "mail:test": "node scripts/send-test-mail.mjs",
+    "setup:sendgrid": "node scripts/setup-sendgrid.mjs",
     "test": "node --test tests/demo-math.mjs && node tests/e2e.mjs"
   },
   "dependencies": {
