@@ -41,10 +41,10 @@
         <button id="tabRegister" class="tab" type="button">crear cuenta</button>
       </div>
       <form id="authForm" autocomplete="off">
-        <label>correo
+        <label class="prompt">correo:
           <input id="email" type="email" required autocomplete="username" placeholder="nombre@sealed.local">
         </label>
-        <label>contraseña
+        <label class="prompt">contraseña:
           <input id="password" type="password" required autocomplete="current-password">
         </label>
         <p id="pwHint" class="hint" hidden>Mínimo 10 caracteres. Al crear la cuenta recibirás un código de
@@ -138,11 +138,11 @@
     <div id="composeView" class="content-inner" hidden>
       <h2 class="panel-title">mensaje nuevo</h2>
       <form id="composeForm" class="sheet compose">
-        <label>para
+        <label class="prompt">para:
           <input id="to" type="email" required placeholder="nombre@sealed.local o cualquier dirección">
         </label>
         <p id="recipFp" class="hint" hidden></p>
-        <label>asunto
+        <label class="prompt">asunto:
           <input id="subject" type="text" maxlength="200">
         </label>
         <label>mensaje

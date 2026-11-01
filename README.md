@@ -240,8 +240,11 @@ docs/          SECURITY.md and README images
 
 ## Design
 
-A terminal mail reader in the spirit of mutt and pine: amber phosphor on black, one
-theme. The app is driven from the keyboard (`c` write, `e` inbox, `v` sent,
+A terminal mail reader in the spirit of mutt and pine: green P1 phosphor on
+green-black glass, one theme, with faint scanlines and darker corners like a curved
+tube. When you move through a folder, the row you leave fades out like a lit CRT pixel.
+Sign-in and compose fields are inline prompts (`correo:`, `para:`), as at a terminal
+login. The app is driven from the keyboard (`c` write, `e` inbox, `v` sent,
 `s` security, `j`/`k` or arrows to move, Enter to open, `q` or Esc to go back) and
 every key is also a button for touch screens. A status bar always says where you are
 and which keys work there. Each folder is a one-line-per-message index whose flag
