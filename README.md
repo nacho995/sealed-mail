@@ -13,28 +13,24 @@ nothing on it worth reading, leaking or training a model on.
   app warns you before sending, and your Sent copy is stored encrypted.
 
 > [!IMPORTANT]
-> **Pending: email with the outside world is not live yet.** The code is finished
-> and tested (SMTP in and out, sending through Resend or SendGrid, receiving polled
-> from Resend: 33 end-to-end checks). What is missing is infrastructure, not code.
-> Real delivery needs **a domain you own whose DNS points at the mail provider**, and
-> for this deployment those DNS records were never added. As things stand:
+> **Sending to anyone works; receiving from the internet is still pending.**
 >
 > | | Status |
 > |---|---|
-> | Mail between Sealed Mail users (end-to-end encrypted) | ✅ works |
-> | Writing to / receiving from Gmail, Outlook… **on your machine** (Mailpit, `npm run mail:test`) | ✅ works |
-> | Writing to / receiving from Gmail, Outlook… **over the internet** | ❌ **not active: needs a verified domain** |
+> | Mail between Sealed Mail users (end-to-end encrypted, with attachments) | ✅ works |
+> | Writing to any Gmail, Outlook… address over the internet, through your own Gmail account (`npm run setup:gmail`, no domain needed) | ✅ works |
+> | Writing to / receiving from outside addresses **on your machine** (Mailpit, `npm run mail:test`) | ✅ works |
+> | Receiving from Gmail, Outlook… **over the internet** | ❌ **not active: needs a domain you own** |
 >
-> To turn it on:
-> 1. Add a domain or subdomain you own in Resend, with sending and receiving enabled
->    (a subdomain such as `mail.example.com` keeps your existing mailboxes untouched).
-> 2. Create the DNS records Resend lists (DKIM TXT, SPF MX + TXT, return-path
->    CNAME, inbound MX) at your DNS provider, and verify the domain in Resend.
+> Receiving is written and tested (inbound SMTP, and polling Resend's receiving API).
+> What is missing is infrastructure: **a domain whose MX record points at the mail
+> provider**. To turn it on:
+> 1. Add a domain or subdomain you own in Resend, with receiving enabled (a subdomain
+>    such as `mail.example.com` keeps your existing mailboxes untouched).
+> 2. Create the DNS records Resend lists at your DNS provider and verify the domain.
 > 3. Set the Resend block of `.env.example` in your `.env` and restart.
 >
-> To only *send* without a domain, `npm run setup:gmail` sends through your own Gmail
-> account (or `npm run setup:sendgrid` through SendGrid's single-sender verification).
-> Replies then go to that mailbox, not to the app.
+> Until then, replies to what you send go to your Gmail inbox, not to the app.
 
 ## The app
 
@@ -107,10 +103,16 @@ The full threat model, every hardening measure and the honest limitations are in
 ## How it was built
 
 Built with an agentic workflow: one coding agent implementing, and a separate
-read-only application-security agent auditing the finished code twice without
-sharing the implementer's reasoning. The second audit found a high-severity flaw
-(enrolling a passkey required the password only in the UI, not on the server) which
-was fixed and is now covered by a test, along with every other finding.
+read-only application-security agent auditing each finished feature without sharing
+the implementer's reasoning. Three audits so far:
+
+- The second one found a high-severity flaw: enrolling a passkey required the password
+  only in the UI, not on the server.
+- The third, on attachments, found that mail from outside claiming to be a user could
+  exhaust that user's attachment quota, and that a right-to-left override could make
+  `fdp.exe` display as `.pdf`.
+
+Every finding was fixed and is covered by a test.
 
 ## Run it
 
@@ -220,12 +222,15 @@ the real browser crypto module: sending and decrypting, real SMTP in and out (wi
 stand-in outside mail server, a byte-level check that incoming plaintext never
 reaches the database, and open-relay refusal), recovery (including two simultaneous
 recoveries racing for the same code), password re-checks, passkey defences, session
-revocation and error handling. CI runs it on Node 22 and 24.
+revocation, encrypted attachments (round trip, a stranger gets 404, a swapped or
+substituted file is rejected, limits and quotas, files in and out by SMTP) and error
+handling: 45 checks. CI runs it on Node 22 and 24.
 
 ## Out of scope (for now)
 
 - **Receiving from the internet** needs a domain (MX record) and the SMTP port
-  exposed with TLS; sending already works through any relay.
+  exposed with TLS, or Resend's receiving API; sending already works through your
+  Gmail or any SMTP relay.
 - HTML mail (shown as text), previews of attached images, threads, search over
   encrypted bodies, forward secrecy.
 
