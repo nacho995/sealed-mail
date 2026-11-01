@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Sealed Mail: juega a ser el servidor</title>
+<meta name="description" content="Demo interactiva de Sealed Mail: tú eres el servidor que guarda los correos de Alice y Bob. Intenta leerlos. Todo el cifrado es real y se ejecuta en tu navegador.">
+<link rel="preload" href="fonts/source-serif-4-var.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="fonts/atkinson-hyperlegible-next-var.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="css/styles.css">
+<link rel="stylesheet" href="demo.css">
+</head>
+<body>
+<header class="topbar">
+  <span class="brand">Sealed Mail</span>
+  <span class="spacer"></span>
+  <a class="btn ghost" href="https://github.com/nacho995/sealed-mail">Ver el código</a>
+</header>
+
+<main id="lab" class="lab" data-act="1">
+  <section class="lab-intro">
+    <h1>Juega a ser el servidor.</h1>
+    <p class="lead">Guardas todo lo que Alice le escribe a Bob. Tu objetivo es leerlo. Cada paso usa el mismo
+      código de cifrado que la aplicación real, ejecutándose ahora mismo en tu navegador.</p>
+  </section>
+
+  <nav class="acts" aria-label="Pasos del ataque">
+    <button class="act active" type="button" data-act="1"><span class="act-n">1</span>Escucha</button>
+    <button class="act" type="button" data-act="2"><span class="act-n">2</span>Manipula</button>
+    <button class="act" type="button" data-act="3"><span class="act-n">3</span>Suplanta</button>
+    <button class="act" type="button" data-act="4"><span class="act-n">4</span>Fuerza la contraseña</button>
+    <button class="act" type="button" data-act="5"><span class="act-n">5</span>Bob la olvida</button>
+  </nav>
+  <p id="actBrief" class="act-brief"></p>
+
+  <div id="booting" class="booting" role="status">Generando la clave de Bob y la tuya…</div>
+
+  <div id="stage" class="stage" hidden>
+    <!-- Alice -->
+    <section class="party sheet" aria-labelledby="aliceH">
+      <header class="party-head">
+        <h2 id="aliceH">Alice</h2>
+        <span class="where">su navegador</span>
+      </header>
+      <label>Mensaje para Bob
+        <textarea id="aliceText" rows="6" maxlength="240" spellcheck="false"></textarea>
+      </label>
+      <p class="hint">Se cifra con cada pulsación, antes de salir de aquí.</p>
+      <div class="keyline">
+        <p class="hint">Huella de la clave que el servidor le ha dado como «la de Bob»</p>
+        <div id="aliceSeesFp" class="fingerprint small"></div>
+      </div>
+    </section>
+
+    <!-- The server: the visitor -->
+    <section class="server" aria-labelledby="serverH">
+      <div class="frame tint">
+        <div class="server-inner">
+          <header class="party-head">
+            <h2 id="serverH">El servidor: tú</h2>
+            <span class="where">tu base de datos</span>
+          </header>
+
+          <div class="field-row">
+            <span class="field-name">Mensaje cifrado</span>
+            <span id="ctSize" class="field-meta"></span>
+          </div>
+          <div id="bytes" class="bytes" aria-label="Bytes del mensaje cifrado"></div>
+          <p id="bytesNote" class="hint"></p>
+
+          <div class="field-row"><span class="field-name">Clave del mensaje, envuelta para el destinatario</span></div>
+          <p id="wrapped" class="blob"></p>
+
+          <!-- 2: tamper -->
+          <div class="power" data-for="2">
+            <div class="row">
+              <button id="flipRandom" class="btn" type="button">Cambiar un bit al azar</button>
+              <button id="restore" class="btn ghost" type="button">Dejarlo como estaba</button>
+            </div>
+          </div>
+
+          <!-- 3: key substitution -->
+          <div class="power" data-for="3">
+            <label class="switch"><input id="mitm" type="checkbox"> Cuando Alice pida la clave de Bob, darle la mía</label>
+            <div id="stolen" class="stolen" hidden>
+              <span class="field-name">Lo que acabas de leer</span>
+              <p id="stolenText" class="letter"></p>
+              <p class="hint">Lo vuelves a cifrar con la clave de verdad de Bob y se lo entregas. Él no nota nada.</p>
+            </div>
+          </div>
+
+          <!-- 4: dictionary attack on the password copy -->
+          <div class="power" data-for="4">
+            <div class="field-row"><span class="field-name">Clave privada de Bob, cifrada con su contraseña</span></div>
+            <p id="pwBlob" class="blob"></p>
+            <button id="attackPw" class="btn primary" type="button">Probar las 40 contraseñas más comunes</button>
+            <p id="pwProgress" class="progress" aria-live="polite"></p>
+            <div id="crackedBox" class="stolen" hidden>
+              <span class="field-name">Lo que ahora lees con la clave de Bob</span>
+              <p id="crackedText" class="letter"></p>
+            </div>
+          </div>
+
+          <!-- 5: guessing the recovery code -->
+          <div class="power" data-for="5">
+            <div class="field-row"><span class="field-name">Clave privada de Bob, cifrada con su código de recuperación</span></div>
+            <p id="recBlob" class="blob"></p>
+            <button id="attackRec" class="btn primary" type="button">Probar 25 códigos al azar</button>
+            <p id="recProgress" class="progress" aria-live="polite"></p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Bob -->
+    <section class="party sheet" aria-labelledby="bobH">
+      <header class="party-head">
+        <h2 id="bobH">Bob</h2>
+        <span class="where">su navegador</span>
+      </header>
+      <div class="inbox">
+        <span class="field-name">Lo que lee Bob</span>
+        <p id="bobText" class="letter"></p>
+        <p id="bobStatus" class="status" aria-live="polite"></p>
+      </div>
+      <div class="keyline">
+        <p class="hint">Huella real de su clave</p>
+        <div id="bobFp" class="fingerprint small"></div>
+      </div>
+
+      <!-- 4: Bob chooses his password -->
+      <div class="power" data-for="4">
+        <label>Contraseña de Bob
+          <input id="bobPw" type="text" spellcheck="false" autocomplete="off">
+        </label>
+        <div class="chips">
+          <button class="chip" type="button" data-pw="123456">123456</button>
+          <button class="chip" type="button" data-pw="verano2024">verano2024</button>
+          <button class="chip" type="button" data-pw="">Una aleatoria</button>
+        </div>
+      </div>
+
+      <!-- 5: Bob forgets it and recovers -->
+      <div class="power" data-for="5">
+        <button id="forgetBtn" class="btn" type="button">Bob olvida su contraseña</button>
+        <div id="recoverBox" class="recover" hidden>
+          <button id="noteBtn" class="note" type="button" title="Pulsa para copiar el código en el campo">
+            <span class="note-title">Nota en el cajón de Bob</span>
+            <span id="noteCode" class="note-code"></span>
+          </button>
+          <label>Código de recuperación
+            <input id="recInput" class="exact" type="text" spellcheck="false" autocomplete="off" placeholder="ABCD-EFGH-…">
+          </label>
+          <button id="recoverBtn" class="btn primary" type="button">Entrar con el código</button>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <section class="verdict" aria-live="polite">
+    <p id="verdict"></p>
+  </section>
+</main>
+
+<footer class="lab-foot">
+  <p>Esta página no tiene servidor: tú lo eres. La clave de Bob y la tuya se generan en tu navegador al abrirla
+    y desaparecen al cerrarla. El cifrado es el de <a href="https://github.com/nacho995/sealed-mail/blob/main/public/js/crypto.js">public/js/crypto.js</a>,
+    el mismo archivo que usa la aplicación.</p>
+</footer>
+
+<script type="module" src="demo.js"></script>
+</body>
+</html>
