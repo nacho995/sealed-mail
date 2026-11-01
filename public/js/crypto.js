@@ -157,6 +157,4 @@ export const crypto = {
   exportPkcs8, importPrivateKey, encryptPkcs8, decryptPkcs8, decryptPrivateKey, secretBundle,
   generateRecoveryCode, normalizeRecoveryCode, passkeyWrapKey,
   encryptBody, decryptBody, wrapMessageKey, unwrapMessageKey,
-  // wire-format helpers, shared so other front ends (the demo) do not re-implement them
-  bufToB64, b64ToBuf,
 };

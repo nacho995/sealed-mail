@@ -93,31 +93,12 @@ secret that never leaves his side:
 | Alter a message unnoticed | **No**: AES-GCM authentication |
 | Learn passwords | **No**: it receives a PBKDF2-derived key and stores `scrypt` of it |
 | Tell which addresses have accounts | **Partly**: login, recovery and passkey sign-in give constant-shape answers (fake salts, usernameless passkeys), but sign-up says when an address is taken and logged-in users can look up recipients |
-| Hand out a fake public key | **Yes**, unless users compare fingerprints (demo step 3) |
+| Hand out a fake public key | **Yes**, unless users compare fingerprints |
 | Serve malicious JavaScript | **Yes**: inherent to web-delivered E2E, not solved here |
 | See who mails whom, and when | **Yes**: metadata is not hidden |
 
 The full threat model, every hardening measure and the honest limitations are in
 [`docs/SECURITY.md`](docs/SECURITY.md).
-
-## Interactive demo: how the encryption holds up
-
-**[Play the server →](https://nacho995.github.io/sealed-mail/)** is a side page that
-explains the encryption: *you* are the server holding Alice's mail to Bob, and you
-try to read it, using the app's own crypto module in your browser (UI in Spanish).
-
-| Step | You try to… | What happens | Why |
-|---|---|---|---|
-| 1. Listen | read what you store | random-looking bytes, different on every keystroke | each message gets a fresh AES-256-GCM key and IV; only Bob's browser holds the key that opens it |
-| 2. Tamper | flip one bit before delivering | Bob rejects the whole message | AES-GCM authenticates the ciphertext |
-| 3. Swap the key | hand Alice your public key instead of Bob's | **it works**: you read it and re-seal it for Bob | encryption alone cannot stop a lying key server; the defence is comparing fingerprints, which the demo shows mismatching |
-| 4. Brute-force | dictionary-attack Bob's password-wrapped key | a weak password falls live; a random one would take ~10⁶ years on 1 000 GPUs | 310 000 rounds of PBKDF2 per guess, measured in your browser |
-| 5. Guess the recovery code | try random codes | nothing, ever | 160 random bits |
-
-Step 3 is deliberate: it is a real limitation of every web-delivered end-to-end
-system, and pretending otherwise would be the dishonest part.
-
-[![The demo: you swap Bob's public key for yours and read the message, while the fingerprints on both sides stop matching](docs/images/demo-swap-the-key.jpg)](https://nacho995.github.io/sealed-mail/)
 
 ## How it was built
 
@@ -222,12 +203,6 @@ reaches the database, and open-relay refusal), recovery (including two simultane
 recoveries racing for the same code), password re-checks, passkey defences, session
 revocation and error handling. CI runs it on Node 22 and 24.
 
-### The demo locally
-
-```bash
-node demo/build.mjs   # assembles _site/ from demo/ plus the app's crypto, CSS and fonts
-```
-
 ## Out of scope (for now)
 
 - **Receiving from the internet** needs a domain (MX record) and the SMTP port
@@ -242,7 +217,6 @@ server/        Express app: auth, recovery, passkeys, mail, rate limits, CSP,
                SMTP in (smtp-in.js) and out (smtp-out.js)
 scripts/       send-test-mail.mjs: "someone outside writes to you"
 public/        the web app (no inline scripts); js/crypto.js holds ALL cryptography
-demo/          "play the server" (built to GitHub Pages)
 tests/e2e.mjs  end-to-end test suite
 docs/          SECURITY.md and README images
 ```
