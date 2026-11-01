@@ -39,7 +39,7 @@ nothing on it worth reading, leaking or training a model on.
 
 | Sign in | Inbox | Security |
 |---|---|---|
-| ![Sign-in page: the headline is encrypted live and shown inside an envelope window](docs/images/app-sign-in.jpg) | ![Inbox with an unreadable message drawn as a sealed envelope and a spoofed sender flagged](docs/images/app-inbox.jpg) | ![Security panel: key fingerprint, recovery code, passkeys, sessions](docs/images/app-security.jpg) |
+| ![Sign-in page: the headline is typed out, then shown encrypted as an ASCII-armored block](docs/images/app-sign-in.jpg) | ![Inbox as a one-line-per-message index: new mail flagged N, a spoofed sender flagged !, an unverified outside sender flagged ?, an unreadable message shown as cipher](docs/images/app-inbox.jpg) | ![Security panel: key fingerprint, recovery code, passkeys, sessions](docs/images/app-security.jpg) |
 
 - **Write to any address.** Sealed Mail recipients get end-to-end encryption; any
   other address gets an ordinary email through your SMTP relay (Mailpit locally,
@@ -223,9 +223,16 @@ docs/          SECURITY.md and README images
 
 ## Design
 
-Ink on paper, with one motif: the security tint printed inside envelopes so a letter
-cannot be read against the light. Everywhere it appears it means "this is what
-everyone else sees". Type: **Source Serif 4** for what people write, **Atkinson
-Hyperlegible** for the interface and its Mono cut for strings copied character by
-character (recovery codes, fingerprints), designed so `0/O` and `l/1/I` cannot be
-confused. All fonts are SIL Open Font License 1.1, self-hosted.
+A terminal mail reader in the spirit of mutt and pine: amber phosphor on black, one
+theme. The app is driven from the keyboard (`c` write, `e` inbox, `v` sent,
+`s` security, `j`/`k` or arrows to move, Enter to open, `q` or Esc to go back) and
+every key is also a button for touch screens. A status bar always says where you are
+and which keys work there. Each folder is a one-line-per-message index whose flag
+column is never truncated, so warnings live there: `N` new, `!` the message claims a
+different sender, `?` from outside and not verified. The sign-in page types its
+headline, then encrypts it in your browser and shows the result ASCII-armored: that
+block is all the server ever sees.
+
+Type: **VT323** for titles and the bars, **Atkinson Hyperlegible Mono** for everything
+else, designed so `0/O` and `l/1/I` cannot be confused in recovery codes and
+fingerprints. All fonts are SIL Open Font License 1.1, self-hosted.
