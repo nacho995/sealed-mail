@@ -30,14 +30,28 @@ const fmtDay = (ms) => dayFmt.format(new Date(ms));
 
 // Top-level screens: exactly one is visible at a time.
 const SCREENS = ['authView', 'recoverView', 'codeView', 'appView'];
-function showScreen(id) { for (const s of SCREENS) $(s).hidden = s !== id; }
+// What the status bar says on the screens outside the app (the app sets its own).
+const SCREEN_STATUS = {
+  authView: ['sin sesión', 'tab siguiente campo  ↵ entrar'],
+  recoverView: ['recuperar la cuenta', 'tab siguiente campo  ↵ comprobar'],
+  codeView: ['código de recuperación', 'tab moverte  espacio marcar la casilla'],
+};
+function showScreen(id) {
+  for (const s of SCREENS) $(s).hidden = s !== id;
+  if (SCREEN_STATUS[id]) setStatus(...SCREEN_STATUS[id]);
+}
 
-// Panels inside the signed-in app.
+// Panels inside the signed-in app. On a wide screen an open message keeps the folder
+// beside it, like mutt's index and pager.
 const PANELS = ['listView', 'readView', 'composeView', 'securityView'];
+const SPLIT = window.matchMedia('(min-width: 1100px)');
 function showPanel(id) {
-  for (const p of PANELS) $(p).hidden = p !== id;
+  for (const p of PANELS) $(p).hidden = p !== id && !(id === 'readView' && p === 'listView' && SPLIT.matches);
   if (id !== 'securityView') { clearPendingPasskey(); closeSudo('cancelled'); }
 }
+SPLIT.addEventListener('change', () => {
+  if (!$('readView').hidden) $('listView').hidden = !SPLIT.matches;
+});
 
 // An outside sender counts as verified only when the receiving provider's DMARC check passed.
 function senderVerified(content) {
@@ -61,38 +75,106 @@ function passkeyError(err) {
   return 'No se ha podido completar con Face ID o Touch ID.';
 }
 
-// ---- the sign-in session ----
-// The headline is typed out once, then encrypted for real with a throwaway key and
-// shown ASCII-armored, so the visitor sees exactly what the server would store.
+// ---- motion helpers ----
+// Every animation here answers something real (a sentence being decrypted, a
+// message being sealed) and is skipped for anyone who asks for reduced motion.
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const CIPHER_GLYPHS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+const randomGlyph = () => CIPHER_GLYPHS[Math.floor(Math.random() * CIPHER_GLYPHS.length)];
+// Same shape as `text` (spaces and line breaks kept) but every other character random.
+const scrambled = (text) => text.replace(/\S/g, randomGlyph);
+const SCRAMBLE_MAX = 1500; // longer texts: animate the start, the rest appears at the end
 
-function typeHeadline(text) {
-  const out = $('heroTyped');
-  if (reducedMotion) { out.textContent = text; return Promise.resolve(); }
-  return new Promise((resolve) => {
-    let i = 0;
-    const step = () => {
-      out.textContent = text.slice(0, ++i);
-      if (i < text.length) setTimeout(step, 28 + Math.random() * 40); else resolve();
-    };
-    step();
-  });
+// Reveals `text` in `node` left to right, the part not yet revealed shown as cipher
+// glyphs, as if it were being decrypted. `alive()` lets a newer call cancel this one.
+async function decodeInto(node, text, duration, alive = () => true) {
+  if (reducedMotion || !text) { node.textContent = text; return; }
+  const head = text.slice(0, SCRAMBLE_MAX);
+  const start = performance.now();
+  for (;;) {
+    if (!alive()) return;
+    const p = Math.min(1, (performance.now() - start) / duration);
+    const shown = Math.floor(head.length * p);
+    const rest = el('span', 'scrambling', scrambled(head.slice(shown)));
+    node.replaceChildren(document.createTextNode(head.slice(0, shown)), rest);
+    if (p >= 1) break;
+    await new Promise(requestAnimationFrame);
+  }
+  if (alive()) node.textContent = text;
 }
 
+// The juggler lives in a <template> and is copied into each spot that shows it.
+for (const slot of document.querySelectorAll('.juggler-slot')) {
+  slot.appendChild($('jugglerTpl').content.cloneNode(true));
+}
+
+// ---- the sign-in session ----
+// The headline decrypts itself on screen, then is encrypted for real with a
+// throwaway key and shown ASCII-armored: exactly what the server would store.
+
 // PGP-style armor: fixed-width lines between BEGIN/END markers.
-function armor(b64) {
-  const lines = b64.match(/.{1,64}/g) || [];
-  return ['-----BEGIN SEALED MESSAGE-----', 'Version: sealed-mail 0.1 (AES-256-GCM)', '', ...lines,
-    '-----END SEALED MESSAGE-----'].join('\n');
+function armorLines(b64) {
+  return ['-----BEGIN SEALED MESSAGE-----', 'Version: sealed-mail 0.1 (AES-256-GCM)', '',
+    ...(b64.match(/.{1,64}/g) || []), '-----END SEALED MESSAGE-----'];
+}
+const armor = (b64) => armorLines(b64).join('\n');
+
+// Writes the armor into `box` a line at a time, each kind of line in its colour.
+async function printArmor(box, b64) {
+  box.textContent = '';
+  for (const line of armorLines(b64)) {
+    const kind = line.startsWith('-----') ? 'armor-mark' : line.startsWith('Version') ? 'armor-head' : 'armor-data';
+    box.append(el('span', kind, line), document.createTextNode('\n'));
+    if (!reducedMotion) await sleep(55);
+  }
+}
+
+// The first 64 bytes as `xxd` prints them: offset, 16 bytes in hex, then as ASCII.
+async function printHexdump(box, b64) {
+  const raw = atob(b64).slice(0, 64);
+  box.textContent = '';
+  for (let off = 0; off < raw.length; off += 16) {
+    const chunk = [...raw.slice(off, off + 16)].map((c) => c.charCodeAt(0));
+    const hex = chunk.map((b) => b.toString(16).padStart(2, '0'))
+      .reduce((acc, h, i) => acc + h + (i % 2 ? ' ' : ''), '').padEnd(40);
+    const ascii = chunk.map((b) => (b >= 0x20 && b < 0x7f ? String.fromCharCode(b) : '.')).join('');
+    box.append(el('span', 'hex-off', `${off.toString(16).padStart(8, '0')}:`), document.createTextNode(' '),
+      el('span', 'hex-bytes', hex), document.createTextNode(' '), el('span', 'hex-ascii', ascii), document.createTextNode('\n'));
+    if (!reducedMotion) await sleep(70);
+  }
+}
+
+// One step of a CLI log: a spinner, then a green tick. The figures in the text are
+// measured in this browser.
+const SPINNER = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏';
+async function bootStep(text) {
+  const mark = el('span', 'boot-mark', reducedMotion ? '✓' : SPINNER[0]);
+  mark.setAttribute('aria-hidden', 'true');
+  const li = el('li');
+  li.append(mark, el('span', 'boot-text', text));
+  $('bootLog').appendChild(li);
+  if (!reducedMotion) {
+    for (let f = 1; f < 9; f++) { await sleep(55); mark.textContent = SPINNER[f % SPINNER.length]; }
+  }
+  mark.textContent = '✓';
+  li.classList.add('done');
 }
 
 async function sealHero() {
   const line = $('heroLine').dataset.line;
   const box = $('heroCipher');
-  await typeHeadline(line);
+  await decodeInto($('heroTyped'), line, 1300);
   try {
+    const t0 = performance.now();
     const { ciphertext } = await seal.encryptBody(line);
-    box.textContent = armor(ciphertext);
+    const ms = performance.now() - t0;
+    const bytes = new TextEncoder().encode(JSON.stringify(line)).length;
+    await bootStep('clave AES-256 de un solo uso generada en este navegador');
+    await bootStep(`${bytes} bytes cifrados en ${new Intl.NumberFormat('es', { maximumFractionDigits: 1 }).format(ms)} ms`);
+    await printArmor(box, ciphertext);
+    await printHexdump($('heroHex'), ciphertext);
+    await bootStep('clave descartada: ese bloque ya no lo abre nadie, tampoco el servidor');
   } catch {
     box.textContent = 'Este navegador no permite cifrar aquí (Web Crypto no está disponible).';
   }
@@ -337,9 +419,20 @@ function setNavActive(target) {
 }
 
 // Status bar: where you are on the left, the keys that work here on the right.
+// Status bar, powerline style: the place as coloured segments ("entrada  5 mensajes"
+// splits on double spaces), then each key as a keycap followed by what it does.
 function setStatus(text, keys) {
-  $('statusText').textContent = text;
-  $('statusKeys').textContent = keys;
+  const segs = $('statusText');
+  segs.textContent = '';
+  for (const part of String(text).split('  ').filter(Boolean)) segs.appendChild(el('span', 'seg', part));
+  const list = $('statusKeys');
+  list.textContent = '';
+  for (const item of String(keys).split('  ').filter(Boolean)) {
+    const [key, ...what] = item.split(' ');
+    const span = el('span', 'key');
+    span.append(el('kbd', null, key), document.createTextNode(what.join(' ')));
+    list.appendChild(span);
+  }
 }
 const FOLDER_KEYS = 'j/k mover  ↵ abrir  c escribir  s seguridad';
 
@@ -365,6 +458,12 @@ function folderStatus(box, messages) {
   setStatus(text, FOLDER_KEYS);
 }
 
+// The empty-folder note (the juggler keeps it company).
+function setEmpty(text) {
+  $('emptyText').textContent = text;
+  $('emptyBox').hidden = !text;
+}
+
 async function openBox(box) {
   state.box = box;
   setNavActive(document.querySelector(`.navBtn[data-box="${box}"]`));
@@ -385,11 +484,11 @@ async function openBox(box) {
   } catch (err) {
     if (err && err.message === 'not authenticated') { sessionEnded('Tu sesión se ha cerrado. Vuelve a entrar.'); return; }
     if (stale()) return;
-    setMsg($('emptyBox'), 'No se ha podido cargar la carpeta. Vuelve a intentarlo en un momento.');
+    setEmpty('No se ha podido cargar la carpeta. Vuelve a intentarlo en un momento.');
     setStatus(`${folderName(box)}  sin conexión con el servidor`, FOLDER_KEYS);
     return;
   }
-  setMsg($('emptyBox'), messages.length ? '' : (box === 'sent'
+  setEmpty(messages.length ? '' : (box === 'sent'
     ? 'Todavía no has enviado nada. Pulsa c para escribir.'
     : 'Tu bandeja está vacía. Pulsa c para escribir a alguien que también use Sealed Mail: solo esa persona podrá leerlo.'));
 
@@ -428,7 +527,7 @@ function messageRow(m, box, content, position) {
   const unverified = box === 'inbox' && m.external && !senderVerified(content);
   const flag = el('span', 'msg-flag', (unread ? 'N' : ' ') + (spoofed ? '!' : unverified ? '?' : ''));
   if (spoofed || unverified) {
-    flag.classList.add('alert');
+    flag.classList.add(spoofed ? 'alert' : 'unverified');
     flag.title = spoofed ? `Dice ser ${content.from}, pero lo envió ${m.sender}` : 'De fuera, sin verificar';
   }
   li.append(flag, el('span', 'msg-date', fmtDate(m.createdAt)));
@@ -466,6 +565,7 @@ function messageRow(m, box, content, position) {
   return li;
 }
 
+let readRun = 0; // a newer message cancels the decrypt animation of the previous one
 function openMessage(m, box, content) {
   showPanel('readView');
   const subject = content.subject || '(sin asunto)';
@@ -489,11 +589,30 @@ function openMessage(m, box, content) {
     note = 'Llegó de fuera como correo normal y el servidor lo cifró al recibirlo, pero no se ha podido comprobar que el remitente sea quien dice ser.';
   }
   setMsg($('readNote'), note);
-  $('readBody').textContent = content.body || '';
+  // the letter decrypts on screen (it really was just decrypted, in this browser)
+  const run = ++readRun;
+  decodeInto($('readBody'), content.body || '', 450, () => run === readRun);
   renderReadFiles(m, content);
-  if (box === 'inbox' && !m.read) { m.read = 1; api.markRead(m.id, box).catch(() => {}); }
-  setStatus(`${folderName(box)}  leyendo: ${subject}`, 'q volver  c escribir');
-  $('backBtn').focus();
+  if (box === 'inbox' && !m.read) {
+    m.read = 1;
+    api.markRead(m.id, box).catch(() => {});
+    const row = index.rows.find((r) => r.m === m);
+    if (row) {
+      row.li.classList.remove('unread');
+      const flag = row.li.querySelector('.msg-flag');
+      flag.textContent = ' ' + flag.textContent.slice(1);
+    }
+  }
+  setStatus(`${folderName(box)}  leyendo: ${subject}`, SPLIT.matches ? 'j/k mover  ↵ abrir  q cerrar' : 'q volver  c escribir');
+  // Side by side, keep the keyboard on the folder; alone, start at the reader.
+  if (!SPLIT.matches) $('backBtn').focus();
+}
+
+// Back to the folder as it was: same selection, read flags already updated.
+function closeReader() {
+  showPanel('listView');
+  folderStatus(state.box, index.rows.map((r) => r.m));
+  if (index.sel >= 0) selectRow(index.sel);
 }
 
 // ---- attachments ----
@@ -504,15 +623,18 @@ function fmtSize(n) {
   if (n < 1024 * 1024) return `${sizeFmt.format(n / 1024)} KB`;
   return `${sizeFmt.format(n / (1024 * 1024))} MB`;
 }
-// The list in a decrypted body, ignoring anything malformed (it is sender-controlled).
+// The list in a decrypted body as [{ meta, index }], skipping malformed entries (it is
+// sender-controlled) without shifting the others: index is the file's real position.
 function attachmentsOf(content) {
-  const list = content && Array.isArray(content.attachments) ? content.attachments : [];
-  return list.filter((a) => a && typeof a.name === 'string' && Number.isInteger(a.size) && typeof a.sha256 === 'string')
-    .slice(0, FILE_LIMITS.count);
+  const list = content && Array.isArray(content.attachments) ? content.attachments.slice(0, FILE_LIMITS.count) : [];
+  return list.map((meta, index) => ({ meta, index }))
+    .filter(({ meta: a }) => a && typeof a.name === 'string' && Number.isInteger(a.size) && typeof a.sha256 === 'string');
 }
-// A name that is safe to save under: no path separators or control characters.
+// A name that is safe to show and to save under: no path separators, control
+// characters or bidirectional overrides (which can make "fdp.exe" read as ".pdf").
+const UNSAFE_NAME_CHARS = /[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
 function safeFileName(name) {
-  const n = String(name).replace(/[\u0000-\u001f\u007f]/g, '').replace(/[\\/]/g, '_').trim().slice(0, 200);
+  const n = String(name).replace(UNSAFE_NAME_CHARS, '').replace(/[\\/]/g, '_').trim().slice(0, 200);
   return n && n !== '.' && n !== '..' ? n : 'adjunto';
 }
 
@@ -521,12 +643,12 @@ function renderReadFiles(m, content) {
   const list = $('readFileList');
   list.textContent = '';
   $('readFiles').hidden = !files.length;
-  files.forEach((meta, i) => {
+  files.forEach(({ meta, index }) => {
     const li = el('li', 'file');
     const btn = el('button', 'btn', 'guardar');
     btn.type = 'button';
-    btn.addEventListener('click', () => saveAttachment(m, meta, i, btn));
-    li.append(el('span', 'file-name', meta.name), el('span', 'file-size', fmtSize(meta.size)), btn);
+    btn.addEventListener('click', () => saveAttachment(m, meta, index, btn));
+    li.append(el('span', 'file-name', safeFileName(meta.name)), el('span', 'file-size', fmtSize(meta.size)), btn);
     list.appendChild(li);
   });
 }
@@ -578,6 +700,53 @@ function renderDraftFiles(problem = '') {
     : '';
   setMsg($('attachInfo'), problem || used);
   $('attachInfo').classList.toggle('spoof', Boolean(problem));
+  $('attachMeterBox').hidden = !draftFiles.length;
+  $('attachMeter').style.setProperty('--p', String(Math.min(1, draftBytes() / FILE_LIMITS.totalBytes)));
+}
+
+// ---- sealing animation ----
+// While a message is encrypted and sent, the compose pane shows it crumbling into
+// cipher glyphs, with the real steps as progress, and ends on the actual ciphertext.
+// It never holds back an error: fail() removes it at once.
+function startSealing(plain) {
+  const box = $('sealing');
+  const text = $('sealingText');
+  const msg = $('sealingMsg');
+  const meter = $('sealingMeter');
+  const started = performance.now();
+  let alive = true;
+  box.hidden = false;
+  msg.className = 'sealing-msg';
+  msg.textContent = 'cifrando en este navegador';
+  meter.style.setProperty('--p', '0.12');
+  const src = (plain || ' ').slice(0, 900);
+  text.textContent = src;
+  (async () => {
+    if (reducedMotion) return;
+    const t0 = performance.now();
+    while (alive) {
+      const p = Math.min(1, (performance.now() - t0) / 900);
+      const k = Math.floor(src.length * p);
+      text.replaceChildren(el('span', 'scrambling', scrambled(src.slice(0, k))), document.createTextNode(src.slice(k)));
+      if (p >= 1) break;
+      await new Promise(requestAnimationFrame);
+    }
+  })();
+  return {
+    step(p, label) { meter.style.setProperty('--p', String(p)); msg.textContent = label; },
+    async done(ciphertextB64, label) {
+      const wait = 1000 - (performance.now() - started);
+      if (wait > 0 && !reducedMotion) await sleep(wait);
+      alive = false;
+      text.textContent = armorLines(ciphertextB64).slice(0, 9).join('\n');
+      meter.style.setProperty('--p', '1');
+      msg.textContent = `✓ ${label}`;
+      msg.classList.add('done');
+      await sleep(reducedMotion ? 900 : 1600);
+      box.hidden = true;
+    },
+    fail() { alive = false; box.hidden = true; },
+  };
 }
 
 $('attachBtn').addEventListener('click', () => $('fileInput').click());
@@ -655,13 +824,15 @@ $('composeForm').addEventListener('submit', async (e) => {
   const btn = $('sendBtn');
   btn.disabled = true;
   setMsg($('composeError'), ''); $('composeOk').hidden = true;
+  let anim = null;
   try {
     if (!state.recip || state.recip.email !== to) await resolveRecipient();
     if (!state.recip || state.recip.email !== to) throw new UserFacingError(`${to} no tiene cuenta en Sealed Mail.`);
     const myPub = await seal.importPublicKey(state.pubKeyB64);
     const content = { from: state.email, to: [to], subject: $('subject').value, body: $('body').value };
+    anim = startSealing(`${content.subject}\n\n${content.body}`);
     // Files: described inside the encrypted body, then each encrypted under its key.
-    if (draftFiles.length) btn.textContent = 'cifrando adjuntos';
+    if (draftFiles.length) anim.step(0.3, `cifrando ${draftFiles.length === 1 ? '1 adjunto' : `${draftFiles.length} adjuntos`}`);
     const fileBytes = await Promise.all(draftFiles.map((f) => f.arrayBuffer()));
     if (fileBytes.length) {
       content.attachments = await Promise.all(draftFiles.map((f, i) =>
@@ -671,6 +842,7 @@ $('composeForm').addEventListener('submit', async (e) => {
     const selfEncKey = await seal.wrapMessageKey(messageKey, myPub);
     const sealedFiles = [];
     for (const [i, bytes] of fileBytes.entries()) sealedFiles.push(await seal.encryptAttachment(messageKey, bytes, i));
+    anim.step(0.65, state.recip.external ? 'enviando como correo normal' : 'enviando el sobre cifrado');
 
     if (state.recip.external) {
       // The text and files go to our server in clear (over the session) because the
@@ -689,6 +861,7 @@ $('composeForm').addEventListener('submit', async (e) => {
           ? 'Has llegado al límite de 250 MB de adjuntos de tu cuenta.'
           : 'El servidor de correo saliente no ha aceptado el mensaje. Tu mensaje sigue aquí.');
       }
+      await anim.done(ciphertext, `enviado a ${to} como correo normal`);
       resetCompose();
       setMsg($('composeOk'), `Enviado a ${to} como correo normal.`);
       return;
@@ -702,13 +875,14 @@ $('composeForm').addEventListener('submit', async (e) => {
       if (err && err.message === 'attachment quota exceeded') throw new UserFacingError('Has llegado al límite de 250 MB de adjuntos de tu cuenta.');
       throw err;
     }
+    await anim.done(ciphertext, `sellado y enviado: solo ${to} puede abrirlo`);
     resetCompose();
     setMsg($('composeOk'), 'Enviado. Solo el destinatario puede abrirlo.');
   } catch (err) {
+    if (anim) anim.fail();
     setMsg($('composeError'), err instanceof UserFacingError ? err.message : 'No se ha podido enviar. Tu mensaje sigue aquí.');
   } finally {
     btn.disabled = false;
-    if (btn.textContent === 'cifrando adjuntos') btn.textContent = state.recip && state.recip.external ? SEND_PLAIN : SEND_SEALED;
   }
 });
 $('composeBack').addEventListener('click', () => openBox(state.box));
@@ -907,7 +1081,7 @@ $('revokeOthersBtn').addEventListener('click', async () => {
 // ---- nav / session ----
 document.querySelectorAll('.navBtn[data-box]').forEach((b) =>
   b.addEventListener('click', () => openBox(b.dataset.box)));
-$('backBtn').addEventListener('click', () => openBox(state.box));
+$('backBtn').addEventListener('click', closeReader);
 
 // ---- keyboard ----
 // Single-letter keys, as in a terminal mail reader. They never fire while the user
@@ -937,6 +1111,7 @@ document.addEventListener('keydown', (e) => {
   else if (inFolder && (key === 'j' || key === 'ArrowDown')) selectRow(index.sel + 1);
   else if (inFolder && (key === 'k' || key === 'ArrowUp')) selectRow(index.sel - 1);
   else if (inFolder && key === 'Enter' && index.sel >= 0) index.rows[index.sel].li.click();
+  else if (!$('readView').hidden && (key === 'q' || key === 'Escape')) closeReader();
   else if (!inFolder && (key === 'q' || key === 'Escape')) openBox(state.box);
   else handled = false;
   if (handled) e.preventDefault();

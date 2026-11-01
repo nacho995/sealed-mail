@@ -40,7 +40,7 @@ nothing on it worth reading, leaking or training a model on.
 
 | Sign in | Inbox | Security |
 |---|---|---|
-| ![Sign-in page: the headline is typed out, then shown encrypted as an ASCII-armored block](docs/images/app-sign-in.jpg) | ![Inbox as a one-line-per-message index: new mail flagged N, a spoofed sender flagged !, an unverified outside sender flagged ?, an unreadable message shown as cipher](docs/images/app-inbox.jpg) | ![Security panel: key fingerprint, recovery code, passkeys, sessions](docs/images/app-security.jpg) |
+| ![Sign-in: the headline decrypts itself and is shown encrypted as an armored block and an xxd dump, next to the sign-in pane where a kid juggles 0s and 1s](docs/images/app-sign-in.jpg) | ![Folder and open message side by side: new mail flagged N, an unverified outside sender ?, a spoofed sender !, an unreadable message shown as cipher, and an attachment ready to save](docs/images/app-inbox.jpg) | ![Security panel: key fingerprint, recovery code, passkeys, sessions](docs/images/app-security.jpg) |
 
 - **Write to any address.** Sealed Mail recipients get end-to-end encryption; any
   other address gets an ordinary email through your SMTP relay (Mailpit locally,
@@ -243,19 +243,24 @@ docs/          SECURITY.md and README images
 
 ## Design
 
-A terminal mail reader in the spirit of mutt and pine: green P1 phosphor on
-green-black glass, one theme, with faint scanlines and darker corners like a curved
-tube. When you move through a folder, the row you leave fades out like a lit CRT pixel.
-Sign-in and compose fields are inline prompts (`correo:`, `para:`), as at a terminal
-login. The app is driven from the keyboard (`c` write, `e` inbox, `v` sent,
-`s` security, `j`/`k` or arrows to move, Enter to open, `q` or Esc to go back) and
-every key is also a button for touch screens. A status bar always says where you are
-and which keys work there. Each folder is a one-line-per-message index whose flag
-column is never truncated, so warnings live there: `N` new, `!` the message claims a
-different sender, `?` from outside and not verified. The sign-in page types its
-headline, then encrypts it in your browser and shows the result ASCII-armored: that
-block is all the server ever sees.
+A professional security console, in the spirit of the tools people who do security
+work use every day: tmux-style panes with their title in the border, a powerline
+status bar, keys shown as keycaps, steel grey on navy. Colour is kept for meaning:
+signal green for the one thing to act on (the main button, the pane you are in, new
+mail), teal for ciphertext, amber for "not verified", red for spoofed.
 
-Type: **VT323** for titles and the bars, **Atkinson Hyperlegible Mono** for everything
-else, designed so `0/O` and `l/1/I` cannot be confused in recovery codes and
-fingerprints. All fonts are SIL Open Font License 1.1, self-hosted.
+The app is driven from the keyboard (`c` write, `e` inbox, `v` sent, `s` security,
+`a` attach, `j`/`k` or arrows to move, Enter to open, `q` or Esc to go back), and every
+key is also a button for touch screens. On a wide screen an open message sits beside
+its folder, as in mutt. The flag column is never truncated, so warnings live there:
+`N` new, `!` the message claims a different sender, `?` from outside and not verified.
+
+The motion always shows something real: the headline decrypts itself and is then
+encrypted in your browser (shown as an armored block and an `xxd` dump, with the
+measured time); a message crumbles into ciphertext as you send it; an opened letter
+decrypts on screen. A kid juggling 0s and 1s keeps the sign-in and an empty inbox
+company. All of it stops for anyone who asks for reduced motion.
+
+Type: **Martian Mono** for titles, labels and bars, **Atkinson Hyperlegible Mono** for
+everything you read, designed so `0/O` and `l/1/I` cannot be confused in recovery
+codes and fingerprints. All fonts are SIL Open Font License 1.1, self-hosted.
