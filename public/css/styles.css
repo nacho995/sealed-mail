@@ -1,8 +1,9 @@
-/* Sealed Mail — amber phosphor terminal.
+/* Sealed Mail — green phosphor terminal.
    The reference is the terminal mail client (mutt, pine): one line per message,
    inverse-video status bars, everything reachable from the keyboard, encrypted
-   mail shown as an ASCII-armored block. Amber phosphor (VT-series terminals), not
-   the usual green: one colour, its dim shades, and red only for warnings.
+   mail shown as an ASCII-armored block. The green is a P1 phosphor at moderate
+   drive on green-black glass, not the acid #00ff41 of film hackers: one colour,
+   its dim shades, a near-white "bright" attribute, and red only for warnings.
 
    Type:
      display  VT323 (a DEC VT320 font): titles and status bars only
@@ -27,17 +28,17 @@
 }
 
 :root {
-  --paper: #140d03;      /* phosphor screen glass */
-  --sheet: #1b1305;      /* raised panels */
-  --ink: #ffb547;        /* amber phosphor */
-  --ink-2: #c98a2e;      /* dim */
-  --ink-3: #8a6224;      /* faint */
-  --rule: #4a3412;
-  --tint-ground: #1a1205;
-  --on-ink: #140d03;     /* text on inverse video */
-  --danger: #ff5f4a;     /* ANSI bright red: warnings only */
-  --ok: #ffd28a;
-  --focus: #ffe2a8;
+  --paper: #030a05;      /* the tube's glass, switched off */
+  --sheet: #06120a;      /* raised panels */
+  --ink: #66ff8c;        /* P1 phosphor */
+  --ink-2: #44c463;      /* dim */
+  --ink-3: #33914b;      /* faint, still 4.5:1 on the glass */
+  --rule: #164a24;
+  --tint-ground: #0a1d10;
+  --on-ink: #030a05;     /* text on inverse video */
+  --danger: #ff5f56;     /* ANSI bright red: warnings only */
+  --ok: #b8ffc9;
+  --focus: #b8ffc9;      /* the terminal's "bright" attribute */
 
   --font-display: 'VT323', ui-monospace, Menlo, monospace;
   --font-mono: 'Atkinson Hyperlegible Mono', ui-monospace, Menlo, Consolas, monospace;
@@ -51,7 +52,7 @@
 
   --r-control: 0;
   --r-sheet: 0;
-  --glow: 0 0 6px rgba(255, 181, 71, 0.35);
+  --glow: 0 0 7px rgba(102, 255, 140, 0.4);
   --gutter: max(16px, env(safe-area-inset-left, 0px));
   --gutter-r: max(16px, env(safe-area-inset-right, 0px));
   color-scheme: dark;
@@ -66,14 +67,17 @@ body {
   color: var(--ink);
   font: 400 var(--t-body)/1.6 var(--font-mono);
 }
-/* faint scanlines; off for anyone asking for more contrast */
+/* faint scanlines and the darker corners of a curved tube; both off for anyone
+   asking for more contrast */
 body::after {
   content: '';
   position: fixed;
   inset: 0;
   pointer-events: none;
   z-index: 50;
-  background: repeating-linear-gradient(to bottom, transparent 0 2px, rgba(0, 0, 0, 0.16) 2px 3px);
+  background:
+    repeating-linear-gradient(to bottom, transparent 0 2px, rgba(0, 0, 0, 0.18) 2px 3px),
+    radial-gradient(ellipse at center, transparent 62%, rgba(0, 0, 0, 0.45) 100%);
 }
 @media (prefers-contrast: more) { body::after { display: none; } }
 ::selection { background: var(--ink); color: var(--on-ink); }
@@ -159,10 +163,14 @@ input, textarea {
   background: transparent;
   color: var(--ink);
   caret-color: var(--ink);
+  caret-shape: block; /* where supported: a terminal cursor, not a line */
   font: 400 var(--t-body)/1.5 var(--font-mono);
 }
 input:focus, textarea:focus { outline: none; background: var(--sheet); border-bottom: 1px solid var(--ink); }
 input::placeholder, textarea::placeholder { color: var(--ink-3); }
+/* getty-style prompt: "correo: ____" on one line, like a terminal login */
+label.prompt { display: grid; grid-template-columns: var(--prompt-w, 12ch) minmax(0, 1fr); align-items: baseline; gap: 0 8px; font-size: var(--t-body); }
+.compose { --prompt-w: 8ch; }
 .check { flex-direction: row; align-items: center; gap: 10px; color: var(--ink); font-size: var(--t-body); }
 .check input { width: 18px; min-height: 18px; height: 18px; accent-color: var(--ink); }
 
@@ -320,6 +328,12 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); }
 .msg > * { overflow: hidden; text-overflow: ellipsis; }
 .msg:hover { background: var(--tint-ground); }
 .msg.selected { background: var(--ink); color: var(--on-ink); }
+/* phosphor persistence: the row you leave fades out like a lit CRT pixel; the row
+   you land on lights at once */
+@media (prefers-reduced-motion: no-preference) {
+  .msg, .msg > * { transition: background-color 320ms ease-out, color 320ms ease-out; }
+  .msg.selected, .msg.selected > * { transition: none; }
+}
 .msg:focus-visible { outline-offset: -2px; }
 .msg-flag { color: var(--ink); white-space: pre; overflow: visible; }
 .msg-flag.alert { color: var(--danger); }
@@ -376,6 +390,8 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); }
 /* ---------- small screens ---------- */
 @media (max-width: 720px) {
   .pitch h1 { font-size: var(--t-5); }
+  /* a long button label wraps with its brackets instead of stranding them */
+  .btn:not(.block) { display: inline-block; padding-block: 8px; line-height: 1.4; text-align: left; }
   .msg { grid-template-columns: 2ch minmax(0, 1fr) auto; grid-template-areas: "flag from date" "flag subject subject"; }
   .msg-flag { grid-area: flag; }
   .msg-date { grid-area: date; }
