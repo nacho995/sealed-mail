@@ -206,10 +206,43 @@ These are inherent to browser-delivered E2E and are not bugs to "fix" silently:
 8. **No forward secrecy.** If a private key leaks, all past mail to that user is
    readable. ECDH ephemeral keys per message would fix this.
 
-## Extending to real email (SMTP)
+## Real email (SMTP)
 
-The encryption model survives the jump to real mail only for recipients who also use
-Sealed Mail (you need their public key). For everyone else you fall back to either
-plaintext SMTP or OpenPGP/S-MIME if the other side publishes a key. That boundary —
-encrypted inside the garden, standard PGP at the edge — is exactly how ProtonMail
-operates.
+End-to-end encryption only works between Sealed Mail users, because it needs the
+recipient's public key. Ordinary email is plaintext by nature. The boundary works
+like ProtonMail's: encrypted inside, ordinary email at the edge, and nothing written
+in the clear on either side.
+
+**Incoming** (`server/smtp-in.js`, default `127.0.0.1:2525`):
+- Accepts mail **only for existing local accounts**. Mail for other domains gets
+  `554 Relaying denied`, unknown users get `550`, and there is a 1 MB size cap and a
+  limit of 20 recipients. It cannot be used as an open relay.
+- Each message is parsed, sealed **in memory** with the recipients' public keys (the
+  exact browser format, `server/sealing.js`), and only the ciphertext is stored. The
+  raw buffer is zeroed afterwards (best effort). The test suite checks byte by byte
+  that the text of an incoming message never appears in the database files.
+- HTML is converted to text and never rendered. Attachments are dropped, with a note.
+- **The sender is not verified.** Ordinary SMTP lets anyone claim any `From`, and
+  SPF/DKIM/DMARC are not checked yet. These messages are flagged "from outside,
+  sender not verified" in the UI. A production deployment should verify them, either
+  with its own checks or using the relay's verdicts.
+- Locally there is no AUTH and no STARTTLS. Exposed to the internet, it needs STARTTLS
+  with a real certificate and an MX record for `MAIL_DOMAIN`.
+
+**Outgoing** (`server/smtp-out.js`, `POST /api/messages/external`):
+- Only for addresses outside `MAIL_DOMAIN`, and only after the UI has warned that the
+  message will leave as an ordinary email. The browser sends the text to the server
+  over the session. The server hands it to the SMTP relay and stores only the sender's
+  copy, which the browser encrypted.
+- The relay connection **must use TLS** unless the relay is localhost (Mailpit).
+- CR/LF in the subject is rejected (header injection). Outgoing mail is limited to 30
+  messages per account per 15 minutes, so a hijacked session cannot get the domain
+  blacklisted for spam.
+- Without a domain, `SMTP_OUT_FROM` sends from a sender address verified with the
+  relay (for example SendGrid's Single Sender). The visible name is the Sealed Mail
+  user, and replies go to that verified mailbox.
+
+**What this means**: while a message to or from an outside address is in transit,
+the server holds its text in memory. It is never written in the clear, but a
+compromised server could read it then. Mail between Sealed Mail users never gives
+the server that chance.

@@ -5,7 +5,9 @@ import { webauthn } from './webauthn.js';
 // The private key lives ONLY in this in-memory object, imported non-extractable.
 // It is never written to localStorage/disk, so a refresh drops it and the user
 // unlocks again (password, passkey or recovery code).
-const state = { email: null, privKey: null, pubKeyB64: null, box: 'inbox', recip: null };
+// mailDomain: the domain our addresses live on (from /api/config); anything else is
+// an outside address that can only receive ordinary email.
+const state = { email: null, privKey: null, pubKeyB64: null, box: 'inbox', recip: null, mailDomain: 'sealed.local' };
 
 const MIN_PASSWORD = 10;
 const CHALLENGE_TTL_MS = 5 * 60 * 1000; // mirrors the server's WebAuthn challenge lifetime
@@ -143,6 +145,9 @@ async function startSession(email, pkcs8OrKey, pubKeyB64) {
 }
 
 async function doRegister(email, password) {
+  if (!email.toLowerCase().endsWith(`@${state.mailDomain}`)) {
+    throw new UserFacingError(`Tu dirección tiene que terminar en @${state.mailDomain}, por ejemplo nombre@${state.mailDomain}.`);
+  }
   if (password.length < MIN_PASSWORD) throw new UserFacingError(`La contraseña necesita al menos ${MIN_PASSWORD} caracteres.`);
   const identity = await seal.generateIdentity();
   const pubKey = await seal.exportPublicKey(identity.publicKey);
@@ -350,6 +355,8 @@ function messageRow(m, box, content) {
     from.textContent = m.sender;
     if (spoofedFrom(content, m)) from.appendChild(el('span', 'spoof', ` dice ser ${content.from}`));
   }
+  // Ordinary email: arrived from outside (sender not provable) or left without E2E.
+  if (m.external) from.appendChild(el('span', 'badge', box === 'sent' ? 'correo normal' : 'de fuera, sin verificar'));
   li.append(from, el('span', 'msg-date', fmtDate(m.createdAt)));
 
   if (!content) {
@@ -385,16 +392,23 @@ function openMessage(m, box, content) {
     if (spoofedFrom(content, m)) from.appendChild(el('span', 'spoof', ` (el mensaje dice ser de ${content.from})`));
   }
   $('readDate').textContent = fmtDate(m.createdAt);
+  setMsg($('readNote'), !m.external ? '' : box === 'sent'
+    ? 'Salió como correo normal: quien gestione el correo del destinatario puede leerlo. Tu copia está cifrada.'
+    : 'Llegó de fuera como correo normal. El servidor lo cifró al recibirlo, pero no puede comprobar que el remitente sea quien dice ser.');
   $('readBody').textContent = content.body || '';
   if (box === 'inbox' && !m.read) { m.read = 1; api.markRead(m.id, box).catch(() => {}); }
   $('backBtn').focus();
 }
 
 // ---- compose ----
+const SEND_SEALED = 'Cifrar y enviar';
+const SEND_PLAIN = 'Enviar sin cifrado de extremo a extremo';
+
 function resetCompose() {
   $('to').value = ''; $('subject').value = ''; $('body').value = '';
   setMsg($('composeError'), ''); $('composeOk').hidden = true;
   setMsg($('recipFp'), ''); state.recip = null;
+  $('sendBtn').textContent = SEND_SEALED;
 }
 $('composeBtn').addEventListener('click', () => {
   setNavActive(null);
@@ -407,15 +421,29 @@ $('composeBtn').addEventListener('click', () => {
 // can verify out-of-band and notice a substituted key.
 async function resolveRecipient() {
   const to = $('to').value.trim().toLowerCase();
+  const line = $('recipFp');
   state.recip = null;
-  $('recipFp').classList.remove('spoof');
-  if (!to) { setMsg($('recipFp'), ''); return; }
+  line.classList.remove('spoof', 'warn');
+  $('sendBtn').textContent = SEND_SEALED;
+  if (!to) { setMsg(line, ''); return; }
+
+  // Someone outside Sealed Mail (Gmail, Outlook…): they have no key here, so this can
+  // only go out as an ordinary email. Say so before sending, not after.
+  if (!to.endsWith(`@${state.mailDomain}`)) {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) { setMsg(line, 'Esa dirección no parece válida.'); line.classList.add('spoof'); return; }
+    state.recip = { email: to, external: true };
+    setMsg(line, 'Esta dirección no es de Sealed Mail, así que el mensaje saldrá como un correo normal: ' +
+      'quien gestione su correo podrá leerlo. Tu copia en Enviados sí queda cifrada.');
+    line.classList.add('warn');
+    $('sendBtn').textContent = SEND_PLAIN;
+    return;
+  }
+
   try {
     const r = await api.pubkey(to);
     const fp = await seal.fingerprint(r.pubKey);
     state.recip = { email: to, pubKey: r.pubKey };
     // Prose in the UI face; only the string to compare character by character is mono.
-    const line = $('recipFp');
     line.textContent = `Huella de ${to}: `;
     line.append(el('span', 'exact', fp), document.createTextNode('. Compárala con esa persona por otro canal.'));
     show(line);
@@ -435,15 +463,28 @@ $('composeForm').addEventListener('submit', async (e) => {
   try {
     if (!state.recip || state.recip.email !== to) await resolveRecipient();
     if (!state.recip || state.recip.email !== to) throw new UserFacingError(`${to} no tiene cuenta en Sealed Mail.`);
-    const recipientPub = await seal.importPublicKey(state.recip.pubKey);
     const myPub = await seal.importPublicKey(state.pubKeyB64);
     const content = { from: state.email, to: [to], subject: $('subject').value, body: $('body').value };
     const { messageKey, ciphertext, iv } = await seal.encryptBody(content);
-    const encKey = await seal.wrapMessageKey(messageKey, recipientPub);
     const selfEncKey = await seal.wrapMessageKey(messageKey, myPub);
+
+    if (state.recip.external) {
+      // The text goes to our server in clear (over the session) because the outside
+      // mail system cannot read anything else; only your own copy is stored, encrypted.
+      try {
+        await api.sendExternal({ to, subject: content.subject, body: content.body, selfCopy: { ciphertext, iv, encKey: selfEncKey } });
+      } catch {
+        throw new UserFacingError('El servidor de correo saliente no ha aceptado el mensaje. Tu mensaje sigue aquí.');
+      }
+      resetCompose();
+      setMsg($('composeOk'), `Enviado a ${to} como correo normal.`);
+      return;
+    }
+
+    const encKey = await seal.wrapMessageKey(messageKey, await seal.importPublicKey(state.recip.pubKey));
     await api.send({ ciphertext, iv, recipients: [{ email: to, encKey }], selfEncKey });
     resetCompose();
-    $('composeOk').hidden = false;
+    setMsg($('composeOk'), 'Enviado. Solo el destinatario puede abrirlo.');
   } catch (err) {
     setMsg($('composeError'), err instanceof UserFacingError ? err.message : 'No se ha podido enviar. Tu mensaje sigue aquí.');
   } finally {
@@ -667,3 +708,9 @@ $('logoutBtn').addEventListener('click', async () => {
 showScreen('authView');
 renderAuthMode();
 sealHero();
+api.config().then(({ mailDomain }) => {
+  state.mailDomain = mailDomain;
+  $('email').placeholder = `nombre@${mailDomain}`;
+  $('recEmail').placeholder = `nombre@${mailDomain}`;
+  $('to').placeholder = `nombre@${mailDomain} o cualquier dirección`;
+}).catch(() => { /* keep the default domain */ });

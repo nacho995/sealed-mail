@@ -190,6 +190,11 @@ async function register(req, res) {
       return res.status(400).json({ error: 'invalid registration payload' });
     }
     const normEmail = email.toLowerCase();
+    // Accounts are mailboxes on our mail domain: that is what lets other mail servers
+    // deliver to them, and what stops anyone claiming a gmail.com address here.
+    if (!normEmail.endsWith(`@${config.mail.domain}`)) {
+      return res.status(400).json({ error: `the address must end in @${config.mail.domain}` });
+    }
     if (getUserByEmail.get(normEmail)) {
       // A new account runs scrypt twice (password + recovery verifier); burn the same
       // amount so timing matches. The 409 itself still says "taken", which sign-up
@@ -259,6 +264,11 @@ function me(req, res) {
   res.json({ email: req.user.email, pubKey: req.user.pub_key });
 }
 
+// Public, non-sensitive settings the sign-up form needs before anyone logs in.
+function publicConfig(req, res) {
+  res.json({ mailDomain: config.mail.domain });
+}
+
 // "Sign out everywhere else": keeps only the session making this request.
 function revokeOtherSessions(req, res) {
   const { changes } = deleteOtherSessions.run(req.user.id, req.sessionTokenHash);
@@ -269,7 +279,7 @@ function revokeOtherSessions(req, res) {
 setInterval(() => { try { deleteExpired.run(Date.now()); } catch { /* ignore */ } }, 60 * 60 * 1000).unref();
 
 module.exports = {
-  register, login, logout, me, saltLookup, revokeOtherSessions,
+  register, login, logout, me, publicConfig, saltLookup, revokeOtherSessions,
   requireAuth, requireCsrf,
   // shared with recovery.js / passkey.js
   helpers: {

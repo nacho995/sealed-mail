@@ -123,6 +123,7 @@
       <article class="sheet reader">
         <h3 id="readSubject"></h3>
         <p class="meta"><span id="readFrom"></span><span id="readDate"></span></p>
+        <p id="readNote" class="hint note-external" hidden></p>
         <pre id="readBody" class="body"></pre>
       </article>
     </div>
@@ -131,7 +132,7 @@
       <h2 class="panel-title">Mensaje nuevo</h2>
       <form id="composeForm" class="sheet compose">
         <label>Para
-          <input id="to" type="email" required placeholder="destinatario@sealed.local">
+          <input id="to" type="email" required placeholder="nombre@sealed.local o cualquier dirección">
         </label>
         <p id="recipFp" class="hint" hidden></p>
         <label>Asunto

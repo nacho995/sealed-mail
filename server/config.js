@@ -55,6 +55,31 @@ module.exports = {
     origin: process.env.ORIGIN || `http://localhost:${port}`,
   },
   sessionTtlMs: 1000 * 60 * 60 * 12, // 12 hours
+  // Real email (SMTP). Accounts are addresses on mailDomain. Defaults are for local
+  // use: inbound mail is accepted on 127.0.0.1:2525 and outbound mail goes to a local
+  // catcher (Mailpit on :1025). With a real domain, point MAIL_DOMAIN at it and the
+  // outbound settings at a relay such as SendGrid (smtp.sendgrid.net:587, user
+  // "apikey", password = the API key).
+  mail: {
+    domain: (process.env.MAIL_DOMAIN || 'sealed.local').toLowerCase(),
+    inbound: {
+      host: process.env.SMTP_IN_HOST || '127.0.0.1',
+      port: Number(process.env.SMTP_IN_PORT) || 2525,
+      maxBytes: 1024 * 1024,
+    },
+    outbound: {
+      host: process.env.SMTP_OUT_HOST || '127.0.0.1',
+      port: Number(process.env.SMTP_OUT_PORT) || 1025,
+      secure: process.env.SMTP_OUT_SECURE === 'true', // implicit TLS (port 465)
+      user: process.env.SMTP_OUT_USER || '',
+      pass: process.env.SMTP_OUT_PASS || '',
+      // Without a domain of your own, relays like SendGrid only send FROM an address
+      // you verified with them (e.g. your Gmail). Set it here: outside mail then goes
+      // out from that address, showing the Sealed Mail sender's name, and replies come
+      // back to it. Leave empty when MAIL_DOMAIN is a real, authenticated domain.
+      from: (process.env.SMTP_OUT_FROM || '').trim().toLowerCase(),
+    },
+  },
   limits: {
     ciphertextBytes: 256 * 1024,
     encKeyB64: 2048,

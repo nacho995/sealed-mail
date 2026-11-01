@@ -22,6 +22,8 @@ async function req(method, url, body) {
 }
 
 export const api = {
+  config: () => req('GET', '/api/config'),
+  sendExternal: (p) => req('POST', '/api/messages/external', p),
   salt: (email) => req('GET', `/api/salt?email=${encodeURIComponent(email)}`),
   register: (p) => req('POST', '/api/register', p),
   login: (p) => req('POST', '/api/login', p),

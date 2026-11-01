@@ -118,5 +118,8 @@ addMissingColumns('users', [
 ]);
 // which passkey opened a session (NULL for password / recovery sessions)
 addMissingColumns('sessions', [['passkey_id', 'INTEGER']]);
+// 1 = arrived by ordinary SMTP from outside (encrypted on arrival, sender unverified)
+//     or was sent out by SMTP (left the system without end-to-end encryption)
+addMissingColumns('messages', [['external', 'INTEGER NOT NULL DEFAULT 0']]);
 
 module.exports = db;
