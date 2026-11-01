@@ -1,7 +1,9 @@
 const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite'); // built into Node 22+ (no native build needed)
 
-const db = new DatabaseSync(path.join(__dirname, '..', 'sealed-mail.db'));
+// DB_PATH lets the test suite run against a throwaway database.
+const dbPath = process.env.DB_PATH || path.join(__dirname, '..', 'sealed-mail.db');
+const db = new DatabaseSync(dbPath);
 db.exec('PRAGMA journal_mode = WAL');
 db.exec('PRAGMA foreign_keys = ON');
 
@@ -97,7 +99,7 @@ CREATE TABLE IF NOT EXISTS webauthn_challenges (
 // never held real users, so stop with a clear instruction instead of failing later.
 const passkeyCols = new Set(db.prepare('PRAGMA table_info(passkeys)').all().map((c) => c.name));
 if (passkeyCols.has('prf_salt')) {
-  throw new Error('sealed-mail.db uses the pre-release passkey schema. Delete sealed-mail.db* and restart.');
+  throw new Error(`${dbPath} uses the pre-release passkey schema. Delete that database (and its -wal/-shm files) and restart.`);
 }
 
 // Columns added after the first release, by migration so older databases keep working.

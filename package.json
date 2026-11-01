@@ -5,11 +5,13 @@
   "description": "End-to-end encrypted webmail MVP. The server stores only ciphertext; message bodies and private keys never reach it in readable form.",
   "type": "commonjs",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.13"
   },
   "scripts": {
     "start": "node server/index.js",
-    "dev": "node --watch server/index.js"
+    "dev": "node --watch server/index.js",
+    "demo:build": "node demo/build.mjs",
+    "test": "node --test tests/demo-math.mjs && node tests/e2e.mjs"
   },
   "dependencies": {
     "@simplewebauthn/server": "14.0.3",
