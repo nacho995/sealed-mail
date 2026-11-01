@@ -242,6 +242,26 @@ in the clear on either side.
   relay (for example SendGrid's Single Sender). The visible name is the Sealed Mail
   user, and replies go to that verified mailbox.
 
+**Receiving through Resend** (`server/resend-in.js`), when `RESEND_RECEIVE_KEY` is set:
+- The MX of `MAIL_DOMAIN` points at Resend. The app polls Resend's Receiving API (no
+  webhook, so no public URL to attack), downloads each new message in its original
+  form and passes it to the same sealing code as the SMTP server. Each provider message
+  id is recorded so it is sealed exactly once.
+- The SPF/DKIM/DMARC verdicts Resend reports are sealed with the message. The UI marks
+  an outside sender "verified" only when DMARC passed.
+- **Accepted risks** (chosen by the operator):
+  - Reading received mail requires a Resend key with **full access**. Resend has no
+    read-only scope. That key can manage everything in the Resend account, including
+    any other domain in it. A dedicated Resend account or team for this app would
+    limit the damage if the key leaked.
+  - **Resend keeps its own copy of incoming mail**: there is no API to delete a
+    received message. That is inherent to ordinary email (it also passes through the
+    sender's provider), but it means an outside message exists in plaintext outside
+    this server.
+- Outgoing mail uses a separate key with **sending access only, restricted to
+  `MAIL_DOMAIN`**. Verified: Resend answers `401 restricted_api_key` if that key tries
+  to read mail or manage domains.
+
 **What this means**: while a message to or from an outside address is in transit,
 the server holds its text in memory. It is never written in the clear, but a
 compromised server could read it then. Mail between Sealed Mail users never gives

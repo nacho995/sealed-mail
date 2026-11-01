@@ -41,6 +41,10 @@ function showPanel(id) {
 
 // Is the client-authored "from" lying about who sent this? m.sender is set by the
 // server from the authenticated session, so it is the trustworthy value.
+function senderVerified(content) {
+  return !!(content && content.auth && content.auth.dmarc === 'pass');
+}
+
 function spoofedFrom(content, m) {
   return content && content.from &&
     String(content.from).toLowerCase() !== String(m.sender).toLowerCase();
@@ -355,8 +359,12 @@ function messageRow(m, box, content) {
     from.textContent = m.sender;
     if (spoofedFrom(content, m)) from.appendChild(el('span', 'spoof', ` dice ser ${content.from}`));
   }
-  // Ordinary email: arrived from outside (sender not provable) or left without E2E.
-  if (m.external) from.appendChild(el('span', 'badge', box === 'sent' ? 'correo normal' : 'de fuera, sin verificar'));
+  // Ordinary email: arrived from outside or left without E2E. An outside sender counts
+  // as verified only when the receiving provider's DMARC check passed.
+  if (m.external) {
+    const label = box === 'sent' ? 'correo normal' : senderVerified(content) ? 'de fuera, verificado' : 'de fuera, sin verificar';
+    from.appendChild(el('span', 'badge', label));
+  }
   li.append(from, el('span', 'msg-date', fmtDate(m.createdAt)));
 
   if (!content) {
@@ -392,9 +400,15 @@ function openMessage(m, box, content) {
     if (spoofedFrom(content, m)) from.appendChild(el('span', 'spoof', ` (el mensaje dice ser de ${content.from})`));
   }
   $('readDate').textContent = fmtDate(m.createdAt);
-  setMsg($('readNote'), !m.external ? '' : box === 'sent'
-    ? 'Salió como correo normal: quien gestione el correo del destinatario puede leerlo. Tu copia está cifrada.'
-    : 'Llegó de fuera como correo normal. El servidor lo cifró al recibirlo, pero no puede comprobar que el remitente sea quien dice ser.');
+  let note = '';
+  if (m.external && box === 'sent') {
+    note = 'Salió como correo normal: quien gestione el correo del destinatario puede leerlo. Tu copia está cifrada.';
+  } else if (m.external && senderVerified(content)) {
+    note = 'Llegó de fuera como correo normal y el servidor lo cifró al recibirlo. El dominio del remitente lo ha autenticado (DMARC), así que viene de quien dice.';
+  } else if (m.external) {
+    note = 'Llegó de fuera como correo normal y el servidor lo cifró al recibirlo, pero no se ha podido comprobar que el remitente sea quien dice ser.';
+  }
+  setMsg($('readNote'), note);
   $('readBody').textContent = content.body || '';
   if (box === 'inbox' && !m.read) { m.read = 1; api.markRead(m.id, box).catch(() => {}); }
   $('backBtn').focus();

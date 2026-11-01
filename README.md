@@ -159,6 +159,15 @@ npm run mail:test -- nombre@sealed.local "Hola" "Escrito desde fuera"
    name, and replies arrive at that address. The connection to the relay must use
    TLS: the app refuses to send in clear text to any relay other than localhost.
 
+**Sending and receiving with your own domain through Resend** (recommended): add a
+subdomain you own in Resend with sending and receiving enabled (for example
+`mail.example.com`, so the main domain's existing mailboxes are untouched), create the
+DNS records Resend lists, then set in `.env` the Resend block shown in
+`.env.example`. Outgoing mail leaves from each user's own address. Incoming mail is
+**polled** from Resend's API every 15 seconds, so the app needs no public URL. Each
+message is sealed on arrival like any other, and the sender is marked verified when
+DMARC passed.
+
 Without a domain of your own, deliverability is limited (a gmail.com sender sent
 through SendGrid may land in spam). **Receiving mail from the internet** needs a
 domain whose MX record points at this server, with the SMTP port exposed over TLS;
