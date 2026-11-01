@@ -52,6 +52,9 @@ nothing on it worth reading, leaking or training a model on.
 - **Face ID / Touch ID / security keys** through WebAuthn passkeys with the PRF
   extension: the biometric never leaves the device, the unlock secret never reaches
   the server.
+- **Attachments**, encrypted in the browser like the text (up to 10 files and 10 MB
+  per message). The reader checks every file against a hash sealed inside the
+  message, so the server cannot swap one.
 - Compose, send, read. Recipient **key fingerprints** for out-of-band verification;
   the sender shown is the one the server authenticated, and a client-claimed
   `from` that disagrees is flagged.
@@ -223,8 +226,8 @@ revocation and error handling. CI runs it on Node 22 and 24.
 
 - **Receiving from the internet** needs a domain (MX record) and the SMTP port
   exposed with TLS; sending already works through any relay.
-- Attachments (incoming ones are dropped with a note), HTML mail (shown as text),
-  threads, search over encrypted bodies, forward secrecy.
+- HTML mail (shown as text), previews of attached images, threads, search over
+  encrypted bodies, forward secrecy.
 
 ## Layout
 

@@ -32,6 +32,7 @@ export const api = {
   pubkey: (email) => req('GET', `/api/pubkey?email=${encodeURIComponent(email)}`),
   messages: (box) => req('GET', `/api/messages?box=${encodeURIComponent(box)}`),
   send: (p) => req('POST', '/api/messages', p),
+  attachment: (id, idx) => req('GET', `/api/messages/${encodeURIComponent(id)}/attachments/${encodeURIComponent(idx)}`),
   markRead: (id, box) => req('POST', `/api/messages/${id}/read?box=${encodeURIComponent(box)}`),
 
   recoverSalt: (email) => req('GET', `/api/recover/salt?email=${encodeURIComponent(email)}`),

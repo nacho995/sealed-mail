@@ -245,6 +245,80 @@ ok("sender decrypted their own Sent copy");
 assert.ok(!ciphertext.includes(secret) && !Buffer.from(ciphertext, 'base64').toString('latin1').includes('servidor'));
 ok('stored ciphertext does not contain the plaintext');
 
+// ---------- attachments ----------
+// Two files: random bytes with a marker inside, and a small text file.
+const fileMarker = `adjunto-secreto-${randomBytes(6).toString('hex')}`;
+const fileA = Buffer.concat([randomBytes(150_000), Buffer.from(fileMarker), randomBytes(150_000)]);
+const fileB = Buffer.from(`notas ${fileMarker}\n`);
+async function sendWithFiles(client, from, myPubB64, toEmail, subject, files) {
+  const pk = await client.req('GET', `/api/pubkey?email=${encodeURIComponent(toEmail)}`);
+  const content = { from: from, to: [toEmail], subject, body: 'con adjuntos',
+    attachments: await Promise.all(files.map((f) => seal.describeFile(f.name, f.type, f.bytes))) };
+  const { messageKey, ciphertext, iv } = await seal.encryptBody(content);
+  const sealed = [];
+  for (const [i, f] of files.entries()) sealed.push(await seal.encryptAttachment(messageKey, f.bytes, i));
+  return client.req('POST', '/api/messages', {
+    ciphertext, iv, attachments: sealed,
+    recipients: [{ email: toEmail, encKey: await seal.wrapMessageKey(messageKey, await seal.importPublicKey(pk.data.pubKey)) }],
+    selfEncKey: await seal.wrapMessageKey(messageKey, await seal.importPublicKey(myPubB64)),
+  });
+}
+// Lists a box and returns the newest message with its key, body and attachment list.
+async function newest(client, privKey, box) {
+  const m = (await client.req('GET', `/api/messages?box=${box}`)).data.messages[0];
+  const key = await seal.unwrapMessageKey(m.encKey, privKey);
+  return { m, key, content: await seal.decryptBody(key, m.ciphertext, m.iv) };
+}
+const withFiles = await sendWithFiles(A, alice.email, alice.pubKeyB64, bobEmail, 'Con adjuntos', [
+  { name: 'foto.bin', type: 'application/octet-stream', bytes: fileA },
+  { name: 'notas.txt', type: 'text/plain', bytes: fileB },
+]);
+assert.equal(withFiles.status, 200, 'send with files -> ' + JSON.stringify(withFiles.data));
+const got = await newest(B, bob.privKey, 'inbox');
+assert.deepEqual(got.content.attachments.map((a) => [a.name, a.size]), [['foto.bin', fileA.length], ['notas.txt', fileB.length]]);
+for (const [i, original] of [fileA, fileB].entries()) {
+  const r = await B.req('GET', `/api/messages/${got.m.id}/attachments/${i}`);
+  assert.equal(r.status, 200);
+  const bytes = await seal.decryptAttachment(got.key, r.data.ciphertext, r.data.iv, i, got.content.attachments[i]);
+  assert.ok(Buffer.from(bytes).equals(original), `attachment ${i} round-trips`);
+}
+ok('attachments are sealed in the browser and the recipient opens each one, byte for byte');
+
+const sentFiles = await newest(A, alice.privKey, 'sent');
+const sentA = await A.req('GET', `/api/messages/${sentFiles.m.id}/attachments/0`);
+assert.ok(Buffer.from(await seal.decryptAttachment(sentFiles.key, sentA.data.ciphertext, sentA.data.iv, 0, sentFiles.content.attachments[0])).equals(fileA));
+const Carol = makeClient();
+await register(Carol, `stranger${stamp}@sealed.local`, 'carol-correct-horse-battery-staple');
+assert.equal((await Carol.req('GET', `/api/messages/${got.m.id}/attachments/0`)).status, 404, 'a stranger must not get the file');
+assert.equal((await makeClient().req('GET', `/api/messages/${got.m.id}/attachments/0`)).status, 401);
+ok('the sender opens their own copy; anyone else gets 404 (and 401 without a session)');
+
+// The server cannot swap files around: file 1 offered as file 0 fails (position is
+// authenticated), and a file that does not match the body's hash is refused.
+const f1 = await B.req('GET', `/api/messages/${got.m.id}/attachments/1`);
+await assert.rejects(seal.decryptAttachment(got.key, f1.data.ciphertext, f1.data.iv, 0, got.content.attachments[0]));
+await assert.rejects(seal.decryptAttachment(got.key, f1.data.ciphertext, f1.data.iv, 1, { ...got.content.attachments[1], sha256: '0'.repeat(64) }));
+ok('a reordered or substituted attachment is rejected by the reader');
+
+const tooMany = await sendWithFiles(A, alice.email, alice.pubKeyB64, bobEmail, 'x',
+  Array.from({ length: 11 }, (_, i) => ({ name: `f${i}`, type: 'text/plain', bytes: Buffer.from('x') })));
+assert.equal(tooMany.status, 400);
+const tooBig = await sendWithFiles(A, alice.email, alice.pubKeyB64, bobEmail, 'x',
+  [{ name: 'grande.bin', type: 'application/octet-stream', bytes: randomBytes(10 * 1024 * 1024 + 1) }]);
+assert.equal(tooBig.status, 400);
+assert.equal((await A.req('POST', '/api/messages', { ciphertext: 'QUJD', iv: 'QUJD', recipients: [], selfEncKey: 'QUJD',
+  attachments: [{ ciphertext: 'not base64!', iv: 'QUJD' }] })).status, 400);
+ok('more than 10 files, more than 10 MB, or a malformed file is refused');
+
+const anonBig = await makeClient().req('POST', '/api/messages', { pad: 'A'.repeat(2 * 1024 * 1024) }, { csrf: false });
+assert.equal(anonBig.status, 401, 'a large anonymous body is refused before it is parsed');
+ok('large message bodies are only accepted from a signed-in session');
+
+const dbWithFiles = fs.readdirSync(tmp).filter((f) => f.startsWith('test.db'))
+  .map((f) => fs.readFileSync(path.join(tmp, f)).toString('latin1')).join('');
+assert.ok(!dbWithFiles.includes(fileMarker), 'attachment plaintext found in the database!');
+ok('attachment contents are nowhere in the database files');
+
 // ---------- password login checks ----------
 const bad = await loginRaw(makeClient(), bobEmail, 'totally-wrong');
 assert.equal(bad.r.status, 401);
@@ -267,7 +341,7 @@ assert.equal(rec1.status, 200, 'recovery should succeed');
 ok('recovered with the code (typed lower-case with spaces: normalization works)');
 
 const afterRec = await readBox(R, rec1.privKey, 'inbox');
-assert.equal(afterRec[0].body, secret);
+assert.ok(afterRec.some((c) => c.body === secret), 'the first message is still readable');
 ok('after recovery the OLD mail is still readable (same private key, re-wrapped)');
 
 const oldSession = await B.req('GET', '/api/messages?box=inbox');
@@ -279,7 +353,7 @@ ok('old password no longer works');
 
 const N = makeClient();
 const bobN = await login(N, bobEmail, bobNewPw);
-assert.equal((await readBox(N, bobN.privKey, 'inbox'))[0].body, secret);
+assert.ok((await readBox(N, bobN.privKey, 'inbox')).some((c) => c.body === secret));
 ok('new password logs in and decrypts old mail');
 
 const reuse = await recover(makeClient(), bobEmail, bob.code, 'another-new-password-2');
@@ -440,6 +514,51 @@ const aliceSent = (await A2.req('GET', '/api/messages?box=sent')).data.messages.
 const aliceCopy = await seal.decryptBody(await seal.unwrapMessageKey(aliceSent.encKey, alice.privKey), aliceSent.ciphertext, aliceSent.iv);
 assert.equal(aliceCopy.body, outBody);
 ok('mail to an outside address is delivered by SMTP, and the Sent copy is stored encrypted');
+
+// Out, with a file: the outside server gets it readable; Alice's copy keeps it sealed.
+const outFile = Buffer.from(`informe ${marker}-file`);
+const outContent = { from: alice.email, to: ['amiga@gmail.com'], subject: 'Con informe', body: 'Te lo adjunto.',
+  attachments: [await seal.describeFile('informe.txt', 'text/plain', outFile)] };
+const outSealedF = await seal.encryptBody(outContent);
+const sentOut = await A2.req('POST', '/api/messages/external', {
+  to: 'amiga@gmail.com', subject: 'Con informe', body: 'Te lo adjunto.',
+  files: [{ name: '../informe.txt', type: 'text/plain', data: outFile.toString('base64') }],
+  selfCopy: { ciphertext: outSealedF.ciphertext, iv: outSealedF.iv, encKey: await seal.wrapMessageKey(outSealedF.messageKey, alicePubKey),
+    attachments: [await seal.encryptAttachment(outSealedF.messageKey, outFile, 0)] },
+});
+assert.equal(sentOut.status, 200, 'external send with file -> ' + JSON.stringify(sentOut.data));
+const caughtFile = outsideMail.find((m) => m.subject === 'Con informe');
+assert.equal(caughtFile.attachments.length, 1);
+assert.equal(caughtFile.attachments[0].filename, '.._informe.txt', 'path separators are stripped from file names');
+assert.ok(caughtFile.attachments[0].content.equals(outFile));
+const aliceOut = (await A2.req('GET', '/api/messages?box=sent')).data.messages.find((m) => m.external === 1 && m.id !== aliceSent.id);
+const aliceOutKey = await seal.unwrapMessageKey(aliceOut.encKey, alice.privKey);
+const aliceOutContent = await seal.decryptBody(aliceOutKey, aliceOut.ciphertext, aliceOut.iv);
+const aliceOutFile = await A2.req('GET', `/api/messages/${aliceOut.id}/attachments/0`);
+assert.ok(Buffer.from(await seal.decryptAttachment(aliceOutKey, aliceOutFile.data.ciphertext, aliceOutFile.data.iv, 0, aliceOutContent.attachments[0])).equals(outFile));
+assert.equal((await A2.req('POST', '/api/messages/external', { to: 'a@gmail.com', subject: 's', body: 'b', files: [{ name: 'a', type: 'text/plain', data: 'QUJD' }], selfCopy })).status, 400,
+  'files without their sealed copy are refused');
+ok('a file sent outside arrives readable there, and the Sent copy keeps it encrypted');
+
+// In, with a file: sealed on arrival like the text.
+const inMarker = `${marker}-in-file`;
+await fromOutside.sendMail({ from: 'amiga@gmail.com', to: bobEmail, subject: 'Te paso el PDF', text: 'Adjunto.',
+  attachments: [{ filename: 'contrato.pdf', contentType: 'application/pdf', content: Buffer.from(`%PDF-1.4 ${inMarker}`) }] });
+const inbound = (await BF.req('GET', '/api/messages?box=inbox')).data.messages;
+let inFile = null;
+for (const m of inbound.filter((x) => x.external === 1)) {
+  const key = await seal.unwrapMessageKey(m.encKey, bobFinal.privKey);
+  const c = await seal.decryptBody(key, m.ciphertext, m.iv);
+  if (c.subject === 'Te paso el PDF') inFile = { m, key, c };
+}
+assert.ok(inFile, 'mail with a file reached the inbox');
+assert.deepEqual(inFile.c.attachments.map((a) => [a.name, a.type]), [['contrato.pdf', 'application/pdf']]);
+const inBytes = await BF.req('GET', `/api/messages/${inFile.m.id}/attachments/0`);
+assert.equal(Buffer.from(await seal.decryptAttachment(inFile.key, inBytes.data.ciphertext, inBytes.data.iv, 0, inFile.c.attachments[0])).toString(), `%PDF-1.4 ${inMarker}`);
+const dbInFile = fs.readdirSync(tmp).filter((f) => f.startsWith('test.db'))
+  .map((f) => fs.readFileSync(path.join(tmp, f)).toString('latin1')).join('');
+assert.ok(!dbInFile.includes(inMarker), 'incoming attachment plaintext found in the database!');
+ok('a file arriving from outside is sealed on arrival, opens for the recipient and is never stored readable');
 
 assert.equal((await A2.req('POST', '/api/messages/external', { to: bobEmail, subject: 's', body: 'b', selfCopy })).status, 400);
 assert.equal((await A2.req('POST', '/api/messages/external', { to: 'a@gmail.com', subject: 'x\r\nBcc: v@evil.com', body: 'b', selfCopy })).status, 400);

@@ -398,6 +398,7 @@ async function openBox(box) {
     try {
       const messageKey = await seal.unwrapMessageKey(m.encKey, state.privKey);
       content = await seal.decryptBody(messageKey, m.ciphertext, m.iv);
+      m.messageKey = messageKey; // non-extractable; opens this message's attachments
     } catch { content = null; }
     if (stale()) return;
     const li = messageRow(m, box, content, index.rows.length);
@@ -458,7 +459,10 @@ function messageRow(m, box, content, position) {
     li.title = 'Tu clave no puede abrir este mensaje.';
     return li;
   }
-  li.append(el('span', 'msg-subject', content.subject || '(sin asunto)'));
+  const subject = el('span', 'msg-subject', content.subject || '(sin asunto)');
+  const files = attachmentsOf(content);
+  if (files.length) subject.appendChild(el('span', 'badge', files.length === 1 ? '1 adjunto' : `${files.length} adjuntos`));
+  li.append(subject);
   return li;
 }
 
@@ -486,10 +490,107 @@ function openMessage(m, box, content) {
   }
   setMsg($('readNote'), note);
   $('readBody').textContent = content.body || '';
+  renderReadFiles(m, content);
   if (box === 'inbox' && !m.read) { m.read = 1; api.markRead(m.id, box).catch(() => {}); }
   setStatus(`${folderName(box)}  leyendo: ${subject}`, 'q volver  c escribir');
   $('backBtn').focus();
 }
+
+// ---- attachments ----
+const FILE_LIMITS = { count: 10, totalBytes: 10 * 1024 * 1024 }; // mirrors server/attachments.js
+const sizeFmt = new Intl.NumberFormat('es', { maximumFractionDigits: 1 });
+function fmtSize(n) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${sizeFmt.format(n / 1024)} KB`;
+  return `${sizeFmt.format(n / (1024 * 1024))} MB`;
+}
+// The list in a decrypted body, ignoring anything malformed (it is sender-controlled).
+function attachmentsOf(content) {
+  const list = content && Array.isArray(content.attachments) ? content.attachments : [];
+  return list.filter((a) => a && typeof a.name === 'string' && Number.isInteger(a.size) && typeof a.sha256 === 'string')
+    .slice(0, FILE_LIMITS.count);
+}
+// A name that is safe to save under: no path separators or control characters.
+function safeFileName(name) {
+  const n = String(name).replace(/[\u0000-\u001f\u007f]/g, '').replace(/[\\/]/g, '_').trim().slice(0, 200);
+  return n && n !== '.' && n !== '..' ? n : 'adjunto';
+}
+
+function renderReadFiles(m, content) {
+  const files = attachmentsOf(content);
+  const list = $('readFileList');
+  list.textContent = '';
+  $('readFiles').hidden = !files.length;
+  files.forEach((meta, i) => {
+    const li = el('li', 'file');
+    const btn = el('button', 'btn', 'guardar');
+    btn.type = 'button';
+    btn.addEventListener('click', () => saveAttachment(m, meta, i, btn));
+    li.append(el('span', 'file-name', meta.name), el('span', 'file-size', fmtSize(meta.size)), btn);
+    list.appendChild(li);
+  });
+}
+
+// Downloads, decrypts and checks one attachment, then hands it to the browser as a
+// download. Always application/octet-stream, so nothing sent to you is ever rendered
+// or run by the browser just by saving it.
+async function saveAttachment(m, meta, i, btn) {
+  btn.disabled = true;
+  btn.textContent = 'descifrando';
+  try {
+    const { ciphertext, iv } = await api.attachment(m.id, i);
+    const bytes = await seal.decryptAttachment(m.messageKey, ciphertext, iv, i, meta);
+    const url = URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = safeFileName(meta.name);
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    btn.textContent = 'guardado';
+  } catch {
+    btn.textContent = 'no se puede abrir: no coincide con el mensaje';
+    btn.classList.add('spoof');
+    return;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// Files chosen for the message being written. Read only when it is sent.
+const draftFiles = [];
+const draftBytes = () => draftFiles.reduce((n, f) => n + f.size, 0);
+
+function renderDraftFiles(problem = '') {
+  const list = $('attachList');
+  list.textContent = '';
+  draftFiles.forEach((f, i) => {
+    const li = el('li', 'file');
+    const del = el('button', 'btn ghost', 'quitar');
+    del.type = 'button';
+    del.addEventListener('click', () => { draftFiles.splice(i, 1); renderDraftFiles(); });
+    li.append(el('span', 'file-name', f.name), el('span', 'file-size', fmtSize(f.size)), del);
+    list.appendChild(li);
+  });
+  const used = draftFiles.length
+    ? `${draftFiles.length} de ${FILE_LIMITS.count} archivos, ${fmtSize(draftBytes())} de 10 MB. Se cifran en tu navegador antes de salir.`
+    : '';
+  setMsg($('attachInfo'), problem || used);
+  $('attachInfo').classList.toggle('spoof', Boolean(problem));
+}
+
+$('attachBtn').addEventListener('click', () => $('fileInput').click());
+$('fileInput').addEventListener('change', () => {
+  let problem = '';
+  for (const file of $('fileInput').files) {
+    if (draftFiles.length >= FILE_LIMITS.count) { problem = `Como mucho ${FILE_LIMITS.count} archivos por mensaje.`; break; }
+    if (draftBytes() + file.size > FILE_LIMITS.totalBytes) { problem = `${file.name} no cabe: el límite es 10 MB por mensaje.`; continue; }
+    draftFiles.push(file);
+  }
+  $('fileInput').value = '';
+  renderDraftFiles(problem);
+});
 
 // ---- compose ----
 const SEND_SEALED = 'cifrar y enviar';
@@ -500,12 +601,14 @@ function resetCompose() {
   setMsg($('composeError'), ''); $('composeOk').hidden = true;
   setMsg($('recipFp'), ''); state.recip = null;
   $('sendBtn').textContent = SEND_SEALED;
+  draftFiles.length = 0;
+  renderDraftFiles();
 }
 $('composeBtn').addEventListener('click', () => {
   setNavActive(null);
   showPanel('composeView');
   resetCompose();
-  setStatus('mensaje nuevo', 'esc salir del campo  e entrada');
+  setStatus('mensaje nuevo', 'esc salir del campo  a adjuntar  e entrada');
   $('to').focus();
 });
 
@@ -557,16 +660,34 @@ $('composeForm').addEventListener('submit', async (e) => {
     if (!state.recip || state.recip.email !== to) throw new UserFacingError(`${to} no tiene cuenta en Sealed Mail.`);
     const myPub = await seal.importPublicKey(state.pubKeyB64);
     const content = { from: state.email, to: [to], subject: $('subject').value, body: $('body').value };
+    // Files: described inside the encrypted body, then each encrypted under its key.
+    if (draftFiles.length) btn.textContent = 'cifrando adjuntos';
+    const fileBytes = await Promise.all(draftFiles.map((f) => f.arrayBuffer()));
+    if (fileBytes.length) {
+      content.attachments = await Promise.all(draftFiles.map((f, i) =>
+        seal.describeFile(f.name, f.type || 'application/octet-stream', fileBytes[i])));
+    }
     const { messageKey, ciphertext, iv } = await seal.encryptBody(content);
     const selfEncKey = await seal.wrapMessageKey(messageKey, myPub);
+    const sealedFiles = [];
+    for (const [i, bytes] of fileBytes.entries()) sealedFiles.push(await seal.encryptAttachment(messageKey, bytes, i));
 
     if (state.recip.external) {
-      // The text goes to our server in clear (over the session) because the outside
-      // mail system cannot read anything else; only your own copy is stored, encrypted.
+      // The text and files go to our server in clear (over the session) because the
+      // outside mail system cannot read anything else; only your own copy is stored,
+      // encrypted.
+      const files = content.attachments
+        ? content.attachments.map((a, i) => ({ name: a.name, type: a.type, data: seal.bufToB64(fileBytes[i]) }))
+        : undefined;
       try {
-        await api.sendExternal({ to, subject: content.subject, body: content.body, selfCopy: { ciphertext, iv, encKey: selfEncKey } });
-      } catch {
-        throw new UserFacingError('El servidor de correo saliente no ha aceptado el mensaje. Tu mensaje sigue aquí.');
+        await api.sendExternal({
+          to, subject: content.subject, body: content.body, files,
+          selfCopy: { ciphertext, iv, encKey: selfEncKey, attachments: sealedFiles.length ? sealedFiles : undefined },
+        });
+      } catch (err) {
+        throw new UserFacingError(err && err.message === 'attachment quota exceeded'
+          ? 'Has llegado al límite de 250 MB de adjuntos de tu cuenta.'
+          : 'El servidor de correo saliente no ha aceptado el mensaje. Tu mensaje sigue aquí.');
       }
       resetCompose();
       setMsg($('composeOk'), `Enviado a ${to} como correo normal.`);
@@ -574,13 +695,20 @@ $('composeForm').addEventListener('submit', async (e) => {
     }
 
     const encKey = await seal.wrapMessageKey(messageKey, await seal.importPublicKey(state.recip.pubKey));
-    await api.send({ ciphertext, iv, recipients: [{ email: to, encKey }], selfEncKey });
+    try {
+      await api.send({ ciphertext, iv, recipients: [{ email: to, encKey }], selfEncKey,
+        attachments: sealedFiles.length ? sealedFiles : undefined });
+    } catch (err) {
+      if (err && err.message === 'attachment quota exceeded') throw new UserFacingError('Has llegado al límite de 250 MB de adjuntos de tu cuenta.');
+      throw err;
+    }
     resetCompose();
     setMsg($('composeOk'), 'Enviado. Solo el destinatario puede abrirlo.');
   } catch (err) {
     setMsg($('composeError'), err instanceof UserFacingError ? err.message : 'No se ha podido enviar. Tu mensaje sigue aquí.');
   } finally {
     btn.disabled = false;
+    if (btn.textContent === 'cifrando adjuntos') btn.textContent = state.recip && state.recip.external ? SEND_PLAIN : SEND_SEALED;
   }
 });
 $('composeBack').addEventListener('click', () => openBox(state.box));
@@ -805,6 +933,7 @@ document.addEventListener('keydown', (e) => {
   else if (key === 'e') openBox('inbox');
   else if (key === 'v') openBox('sent');
   else if (key === 's') openSecurity();
+  else if (key === 'a' && !$('composeView').hidden) $('attachBtn').click();
   else if (inFolder && (key === 'j' || key === 'ArrowDown')) selectRow(index.sel + 1);
   else if (inFolder && (key === 'k' || key === 'ArrowUp')) selectRow(index.sel - 1);
   else if (inFolder && key === 'Enter' && index.sel >= 0) index.rows[index.sel].li.click();

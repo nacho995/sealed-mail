@@ -361,6 +361,14 @@ label.prompt { display: grid; grid-template-columns: var(--prompt-w, 12ch) minma
 .compose { padding: 18px 20px; }
 .compose textarea { min-height: 260px; resize: vertical; border: 1px dashed var(--ink-3); }
 .compose textarea:focus { border: 1px solid var(--ink); }
+/* attached files: one line each, like a directory listing */
+.attach { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.files { list-style: none; margin: 0; padding: 0; width: 100%; }
+.file { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 0 16px; padding: 2px 0; }
+.file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-size { color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.read-files { display: flex; flex-direction: column; gap: 6px; padding-top: 12px; border-top: 1px dashed var(--rule); }
+.read-files h4 { margin: 0; font: 400 var(--t-3)/1.2 var(--font-display); color: var(--ink-2); }
 .compose .actions { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
 
 /* security settings: sections like a config screen */

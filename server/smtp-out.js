@@ -2,6 +2,7 @@ const nodemailer = require('nodemailer');
 const db = require('./db');
 const config = require('./config');
 const { helpers: h } = require('./auth');
+const attachments = require('./attachments');
 
 // Outbound SMTP: writing to someone OUTSIDE Sealed Mail (a Gmail or Outlook address).
 // Their mail server cannot read our format, so this message necessarily leaves as an
@@ -33,7 +34,7 @@ const MAX_BODY_CHARS = 100_000;
 
 async function sendExternal(req, res) {
   try {
-    const { to, subject, body, selfCopy } = req.body || {};
+    const { to, subject, body, selfCopy, files } = req.body || {};
     const recipient = String(to || '').trim().toLowerCase();
     if (!h.validEmail(recipient) || recipient.endsWith(`@${domain}`)) {
       return res.status(400).json({ error: 'not an external address' });
@@ -47,6 +48,14 @@ async function sendExternal(req, res) {
         !h.validB64(selfCopy.iv, 64) || !h.validB64(selfCopy.encKey, config.limits.encKeyB64)) {
       return res.status(400).json({ error: 'invalid sent copy' });
     }
+    // The files twice: readable for the other mail system, and encrypted for the
+    // sender's own Sent copy. Both lists must describe the same files.
+    const plainFiles = attachments.parsePlain(files);
+    const sealedFiles = attachments.parseSealed(selfCopy.attachments);
+    if (!plainFiles || !sealedFiles || plainFiles.length !== sealedFiles.length) {
+      return res.status(400).json({ error: 'invalid attachments' });
+    }
+    if (attachments.overQuota(req.user.email, sealedFiles)) return res.status(413).json({ error: 'attachment quota exceeded' });
 
     // With a verified relay sender (no domain of our own), the visible name says who
     // wrote it and replies go back to that verified mailbox, since our own addresses
@@ -55,15 +64,18 @@ async function sendExternal(req, res) {
       ? { from: { name: `${req.user.email} (Sealed Mail)`, address: outbound.from }, replyTo: outbound.from }
       : { from: req.user.email };
     try {
-      await transport.sendMail({ ...envelope, to: recipient, subject, text: body });
+      await transport.sendMail({ ...envelope, to: recipient, subject, text: body, attachments: plainFiles });
     } catch {
       return res.status(502).json({ error: 'the mail relay did not accept the message' });
+    } finally {
+      for (const f of plainFiles) f.content.fill(0); // best effort: drop the readable copy
     }
 
     // Delivered: keep only the sender's own copy, which the browser encrypted.
     db.transaction(() => {
       const { lastInsertRowid } = insertMessage.run(req.user.email, selfCopy.ciphertext, selfCopy.iv, Date.now());
       insertRecipient.run(lastInsertRowid, req.user.id, 'sent', selfCopy.encKey);
+      attachments.store(lastInsertRowid, sealedFiles);
     })();
     return res.json({ ok: true });
   } catch {

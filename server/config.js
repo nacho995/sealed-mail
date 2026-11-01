@@ -65,7 +65,7 @@ module.exports = {
     inbound: {
       host: process.env.SMTP_IN_HOST || '127.0.0.1',
       port: Number(process.env.SMTP_IN_PORT) || 2525,
-      maxBytes: 1024 * 1024,
+      maxBytes: 15 * 1024 * 1024, // room for 10 MB of attachments once MIME-encoded
     },
     outbound: {
       host: process.env.SMTP_OUT_HOST || '127.0.0.1',

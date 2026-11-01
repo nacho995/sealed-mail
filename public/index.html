@@ -132,6 +132,10 @@
         </dl>
         <p id="readNote" class="hint note-external" hidden></p>
         <pre id="readBody" class="body"></pre>
+        <section id="readFiles" class="read-files" aria-labelledby="readFilesTitle" hidden>
+          <h4 id="readFilesTitle">adjuntos</h4>
+          <ul id="readFileList" class="files"></ul>
+        </section>
       </article>
     </div>
 
@@ -148,6 +152,12 @@
         <label>mensaje
           <textarea id="body" rows="12" placeholder="Se cifra en tu navegador antes de salir."></textarea>
         </label>
+        <div class="attach">
+          <input id="fileInput" type="file" multiple hidden>
+          <button id="attachBtn" class="btn" type="button">adjuntar archivos</button>
+          <ul id="attachList" class="files" aria-label="Archivos adjuntos"></ul>
+          <p id="attachInfo" class="hint" role="status" hidden></p>
+        </div>
         <div class="actions">
           <button id="sendBtn" class="btn primary" type="submit">cifrar y enviar</button>
           <button id="composeBack" class="btn ghost" type="button">descartar</button>

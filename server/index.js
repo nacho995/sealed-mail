@@ -8,6 +8,7 @@ const rateLimit = require('express-rate-limit');
 const config = require('./config');
 const auth = require('./auth');
 const mail = require('./mail');
+const attachments = require('./attachments');
 const recovery = require('./recovery');
 const passkey = require('./passkey');
 const smtpOut = require('./smtp-out');
@@ -41,7 +42,13 @@ app.use(helmet({
   crossOriginResourcePolicy: { policy: 'same-origin' },
   referrerPolicy: { policy: 'no-referrer' },
 }));
-app.use(express.json({ limit: '512kb' }));
+// Small JSON bodies everywhere, except the two send routes, which take attachments and
+// parse their larger body only AFTER the session and CSRF checks (jsonWithFiles
+// below), so an anonymous client cannot make the server buffer 16 MB.
+const FILE_ROUTES = new Set(['/api/messages', '/api/messages/external']);
+const smallJson = express.json({ limit: '512kb' });
+const jsonWithFiles = express.json({ limit: attachments.MAX_REQUEST });
+app.use((req, res, next) => (req.method === 'POST' && FILE_ROUTES.has(req.path) ? next() : smallJson(req, res, next)));
 app.use(cookieParser());
 
 // ---- rate limiting ----
@@ -94,10 +101,11 @@ app.post('/api/logout', auth.requireAuth, auth.requireCsrf, auth.logout);
 app.get('/api/me', auth.requireAuth, auth.me);
 app.get('/api/pubkey', limit.api, auth.requireAuth, mail.pubkeyLookup);
 app.get('/api/messages', limit.api, auth.requireAuth, mail.list);
-app.post('/api/messages', limit.api, auth.requireAuth, auth.requireCsrf, mail.send);
+app.post('/api/messages', limit.api, auth.requireAuth, auth.requireCsrf, jsonWithFiles, mail.send);
+app.get('/api/messages/:id/attachments/:idx', limit.api, auth.requireAuth, attachments.download);
 app.post('/api/messages/:id/read', limit.api, auth.requireAuth, auth.requireCsrf, mail.read);
 // Ordinary email to an address outside Sealed Mail (see smtp-out.js).
-app.post('/api/messages/external', limit.api, auth.requireAuth, limit.outbound, auth.requireCsrf, smtpOut.sendExternal);
+app.post('/api/messages/external', limit.api, auth.requireAuth, limit.outbound, auth.requireCsrf, jsonWithFiles, smtpOut.sendExternal);
 app.post('/api/sessions/revoke-others', limit.api, auth.requireAuth, auth.requireCsrf, auth.revokeOtherSessions);
 
 // Account recovery with the recovery code.

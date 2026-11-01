@@ -3,6 +3,7 @@ const { simpleParser } = require('mailparser');
 const db = require('./db');
 const config = require('./config');
 const { sealForRecipients } = require('./sealing');
+const attachments = require('./attachments');
 
 // Inbound SMTP: how ordinary email (Gmail, Outlook, any mail client) reaches a Sealed
 // Mail inbox. Each message is parsed and sealed with the recipients' public keys in
@@ -58,9 +59,20 @@ async function deliverRaw(raw, { recipients: rcpts, envelopeFrom, authentication
   const from = cleanAddress(mail.from && mail.from.value && mail.from.value[0] && mail.from.value[0].address)
     || cleanAddress(envelopeFrom)
     || 'remitente-desconocido@invalid';
-  const attachments = (mail.attachments || []).length;
   let body = (mail.text || '').slice(0, MAX_BODY_CHARS); // HTML-only mail arrives converted to text
-  if (attachments) body += `\n\n[${attachments} adjunto(s) no incluido(s): Sealed Mail todavía no admite adjuntos]`;
+
+  // Files are sealed like the text, within the same limits as mail written here.
+  // Whatever does not fit is left out, and the body says so.
+  const files = [];
+  let total = 0;
+  let dropped = 0;
+  for (const a of mail.attachments || []) {
+    const size = a.content ? a.content.length : 0;
+    if (files.length >= attachments.LIMITS.count || total + size > attachments.LIMITS.totalBytes) { dropped++; continue; }
+    total += size;
+    files.push({ name: attachments.cleanName(a.filename), type: attachments.cleanType(a.contentType), content: a.content });
+  }
+  if (dropped) body += `\n\n[${dropped} adjunto(s) no incluido(s): superaban el límite de ${attachments.LIMITS.count} archivos o 10 MB por mensaje]`;
 
   const content = {
     from,
@@ -69,10 +81,16 @@ async function deliverRaw(raw, { recipients: rcpts, envelopeFrom, authentication
     body,
     auth: verdicts(authentication), // sealed with the message, like everything else
   };
-  const sealed = await sealForRecipients(content, recipients.map((u) => u.pub_key));
+  let sealed;
+  try {
+    sealed = await sealForRecipients(content, recipients.map((u) => u.pub_key), files);
+  } finally {
+    for (const f of files) f.content.fill(0); // best effort: drop the readable copy
+  }
   db.transaction(() => {
     const { lastInsertRowid } = insertMessage.run(from, sealed.ciphertext, sealed.iv, Date.now());
     recipients.forEach((u, i) => insertRecipient.run(lastInsertRowid, u.id, 'inbox', sealed.encKeys[i]));
+    attachments.store(lastInsertRowid, sealed.attachments);
   })();
 }
 
