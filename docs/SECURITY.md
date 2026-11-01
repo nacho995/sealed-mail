@@ -52,9 +52,14 @@ of it.**
 - Saving a file always hands the browser `application/octet-stream` under a cleaned
   name (no path separators or control characters): nothing received is rendered or run
   by the page.
-- Limits: 10 files and 10 MB per message, and 250 MB of stored attachments per
-  sending account. The larger request body these routes need is only parsed after the
-  session and CSRF checks.
+- Limits: 10 files and 10 MB per message. 250 MB of stored attachments per account,
+  counted by the account that sent them, never by the From address (mail from outside
+  can claim any From). One send with files to an outside address at a time per
+  account, so parallel sends cannot overshoot the quota. The larger request body these
+  routes need (16 MB; 30 MB to outside addresses, which carry each file twice) is only
+  parsed after the session and CSRF checks, and sends are rate-limited per account.
+- File names lose path separators, control characters and bidirectional overrides
+  (which could make `fdp.exe` display as `.pdf`), both when shown and when saved.
 - **What the server learns**: how many files a message has and their encrypted sizes
   (each is its plaintext size plus 16 bytes). Names, types and contents stay sealed.
 
@@ -244,9 +249,10 @@ in the clear on either side.
   that the text of an incoming message never appears in the database files.
 - HTML is converted to text and never rendered. Attachments are sealed like the text
   (same format as the browser's, up to 10 files / 10 MB; extra ones are left out with
-  a note), and their readable copy is zeroed after sealing (best effort). Mail from
-  outside does not count against any account quota and has no rate limit yet: an
-  internet-facing deployment needs one.
+  a note), and their readable copy is zeroed after sealing (best effort). Each
+  recipient may hold up to 250 MB of files from outside; past that the text still
+  arrives, with a note instead of the files. There is no rate limit on inbound SMTP
+  yet: an internet-facing deployment needs one per sending IP.
 - **The sender is not verified.** Ordinary SMTP lets anyone claim any `From`, and
   SPF/DKIM/DMARC are not checked yet. These messages are flagged "from outside,
   sender not verified" in the UI. A production deployment should verify them, either

@@ -93,5 +93,8 @@ module.exports = {
     encKeyB64: 2048,
     recipients: 20,
     emailLen: 254,
+    // Stored attachment bytes per account, counted separately for what it sends and
+    // for what it receives from outside. Overridable so the tests can reach it.
+    attachmentQuotaBytes: Number(process.env.ATTACHMENT_QUOTA_BYTES) || 250 * 1024 * 1024,
   },
 };

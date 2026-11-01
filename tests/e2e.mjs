@@ -106,6 +106,7 @@ const server = spawn(process.execPath, [path.join(root, 'server/index.js')], {
     RESEND_RECEIVE_KEY: RESEND_TEST_KEY,
     RESEND_API_BASE: resendBase,
     RESEND_POLL_MS: '300',
+    ATTACHMENT_QUOTA_BYTES: String(30 * 1024 * 1024), // small enough for the quota tests
   },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
@@ -559,6 +560,62 @@ const dbInFile = fs.readdirSync(tmp).filter((f) => f.startsWith('test.db'))
   .map((f) => fs.readFileSync(path.join(tmp, f)).toString('latin1')).join('');
 assert.ok(!dbInFile.includes(inMarker), 'incoming attachment plaintext found in the database!');
 ok('a file arriving from outside is sealed on arrival, opens for the recipient and is never stored readable');
+
+// An empty file is valid (its ciphertext is just the 16-byte tag).
+const emptyFile = await sendWithFiles(A2, alice.email, alice.pubKeyB64, bobEmail, 'Vacío',
+  [{ name: 'vacio.txt', type: 'text/plain', bytes: Buffer.alloc(0) }]);
+assert.equal(emptyFile.status, 200, 'empty file -> ' + JSON.stringify(emptyFile.data));
+ok('an empty file can be attached');
+
+// A large file to an outside address travels twice (readable and sealed) and still fits;
+// a right-to-left override in its name is stripped.
+const bigOut = randomBytes(8 * 1024 * 1024);
+const bigContent = { from: alice.email, to: ['amiga@gmail.com'], subject: 'Grande', body: 'b',
+  attachments: [await seal.describeFile('factura\u202efdp.exe', 'application/octet-stream', bigOut)] };
+const bigSealed = await seal.encryptBody(bigContent);
+const bigSent = await A2.req('POST', '/api/messages/external', {
+  to: 'amiga@gmail.com', subject: 'Grande', body: 'b',
+  files: [{ name: 'factura\u202efdp.exe', type: 'application/octet-stream', data: bigOut.toString('base64') }],
+  selfCopy: { ciphertext: bigSealed.ciphertext, iv: bigSealed.iv, encKey: await seal.wrapMessageKey(bigSealed.messageKey, alicePubKey),
+    attachments: [await seal.encryptAttachment(bigSealed.messageKey, bigOut, 0)] },
+});
+assert.equal(bigSent.status, 200, 'external 8 MB -> ' + JSON.stringify(bigSent.data));
+const bigCaught = outsideMail.find((m) => m.subject === 'Grande');
+assert.equal(bigCaught.attachments[0].filename, 'facturafdp.exe', 'bidi override stripped from the name');
+assert.ok(bigCaught.attachments[0].content.equals(bigOut));
+ok('an 8 MB file goes out to an outside address, its name stripped of direction overrides');
+
+// Mail from outside claiming to be Alice must not spend Alice's quota, and outside
+// mail can only store so much for one recipient before files are left out.
+const D = makeClient();
+const daveEmail = `d${stamp}@sealed.local`;
+const dave = await register(D, daveEmail, 'dave-correct-horse-battery-staple');
+const nineMb = randomBytes(9 * 1024 * 1024);
+for (let i = 0; i < 4; i++) {
+  await fromOutside.sendMail({ from: alice.email, to: daveEmail, subject: `Relleno ${i}`, text: 'x',
+    attachments: [{ filename: `relleno-${i}.bin`, content: nineMb }] });
+}
+const daveBox = (await D.req('GET', '/api/messages?box=inbox')).data.messages;
+const daveContents = await Promise.all(daveBox.map(async (m) =>
+  seal.decryptBody(await seal.unwrapMessageKey(m.encKey, dave.privKey), m.ciphertext, m.iv)));
+const lastFill = daveContents.find((c) => c.subject === 'Relleno 3');
+assert.ok(!lastFill.attachments, 'files past the inbound quota are left out');
+assert.match(lastFill.body, /límite de adjuntos recibidos de fuera/);
+assert.equal(daveContents.filter((c) => c.attachments).length, 3);
+const afterSpoof = await sendWithFiles(A2, alice.email, alice.pubKeyB64, bobEmail, 'Sigo pudiendo',
+  [{ name: 'a.bin', type: 'application/octet-stream', bytes: randomBytes(1024 * 1024) }]);
+assert.equal(afterSpoof.status, 200, 'spoofed From must not count against Alice -> ' + JSON.stringify(afterSpoof.data));
+ok('outside mail claiming to be someone does not spend their quota, and stops storing files past the recipient quota');
+
+const overQuota = await sendWithFiles(A2, alice.email, alice.pubKeyB64, bobEmail, 'Demasiado',
+  [{ name: 'a.bin', type: 'application/octet-stream', bytes: randomBytes(9 * 1024 * 1024) },
+   { name: 'b.bin', type: 'application/octet-stream', bytes: randomBytes(1) }]);
+const overQuota2 = await sendWithFiles(A2, alice.email, alice.pubKeyB64, bobEmail, 'Demasiado 2',
+  [{ name: 'c.bin', type: 'application/octet-stream', bytes: randomBytes(9 * 1024 * 1024) }]);
+const overQuota3 = await sendWithFiles(A2, alice.email, alice.pubKeyB64, bobEmail, 'Demasiado 3',
+  [{ name: 'd.bin', type: 'application/octet-stream', bytes: randomBytes(9 * 1024 * 1024) }]);
+assert.deepEqual([overQuota.status, overQuota2.status, overQuota3.status], [200, 200, 413], 'the third 9 MB send passes 30 MB');
+ok('the per-account attachment quota counts what the account itself sent');
 
 assert.equal((await A2.req('POST', '/api/messages/external', { to: bobEmail, subject: 's', body: 'b', selfCopy })).status, 400);
 assert.equal((await A2.req('POST', '/api/messages/external', { to: 'a@gmail.com', subject: 'x\r\nBcc: v@evil.com', body: 'b', selfCopy })).status, 400);

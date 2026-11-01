@@ -68,11 +68,22 @@ async function deliverRaw(raw, { recipients: rcpts, envelopeFrom, authentication
   let dropped = 0;
   for (const a of mail.attachments || []) {
     const size = a.content ? a.content.length : 0;
-    if (files.length >= attachments.LIMITS.count || total + size > attachments.LIMITS.totalBytes) { dropped++; continue; }
+    if (files.length >= attachments.LIMITS.count || total + size > attachments.LIMITS.totalBytes) {
+      dropped++;
+      if (a.content) a.content.fill(0);
+      continue;
+    }
     total += size;
     files.push({ name: attachments.cleanName(a.filename), type: attachments.cleanType(a.contentType), content: a.content });
   }
   if (dropped) body += `\n\n[${dropped} adjunto(s) no incluido(s): superaban el límite de ${attachments.LIMITS.count} archivos o 10 MB por mensaje]`;
+  // Each recipient has a cap on what outside mail may store for them; past it the
+  // text is still delivered, without the files.
+  if (files.length && attachments.inboundOverQuota(recipients.map((u) => u.id), total)) {
+    body += `\n\n[${files.length} adjunto(s) no incluido(s): el buzón ha llegado a su límite de adjuntos recibidos de fuera]`;
+    files.forEach((f) => f.content.fill(0));
+    files.length = 0;
+  }
 
   const content = {
     from,
@@ -126,6 +137,7 @@ function startInboundSmtp() {
       });
       stream.on('end', async () => {
         const raw = Buffer.concat(chunks);
+        for (const c of chunks) c.fill(0); // the pieces held the same plaintext
         chunks.length = 0;
         try {
           if (stream.sizeExceeded || size > inbound.maxBytes) return callback(smtpError(552, 'Message too large'));

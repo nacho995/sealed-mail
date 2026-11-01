@@ -34,7 +34,7 @@ function send(req, res) {
   }
   const files = attachments.parseSealed((req.body || {}).attachments);
   if (!files) return res.status(400).json({ error: 'invalid attachments' });
-  if (attachments.overQuota(req.user.email, files)) return res.status(413).json({ error: 'attachment quota exceeded' });
+  if (attachments.overQuota(req.user.id, files)) return res.status(413).json({ error: 'attachment quota exceeded' });
   if (!Array.isArray(recipients) || recipients.length < 1 || recipients.length > L.recipients) {
     return res.status(400).json({ error: 'invalid recipient list' });
   }

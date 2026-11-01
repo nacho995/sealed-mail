@@ -30,6 +30,7 @@ const insertMessage = db.prepare('INSERT INTO messages (sender_email, ciphertext
 const insertRecipient = db.prepare('INSERT INTO message_recipients (message_id,user_id,box,enc_key,read_flag) VALUES (?,?,?,?,0)');
 
 const MAX_SUBJECT = 300;
+const sendingWithFiles = new Set(); // user ids with a send-with-attachments in flight
 const MAX_BODY_CHARS = 100_000;
 
 async function sendExternal(req, res) {
@@ -55,7 +56,17 @@ async function sendExternal(req, res) {
     if (!plainFiles || !sealedFiles || plainFiles.length !== sealedFiles.length) {
       return res.status(400).json({ error: 'invalid attachments' });
     }
-    if (attachments.overQuota(req.user.email, sealedFiles)) return res.status(413).json({ error: 'attachment quota exceeded' });
+    // One send with files per account at a time: the quota is checked here but the
+    // copy is stored only after the relay answers, so parallel sends could overshoot.
+    if (sealedFiles.length && sendingWithFiles.has(req.user.id)) {
+      plainFiles.forEach((f) => f.content.fill(0));
+      return res.status(429).json({ error: 'another send with attachments is in progress' });
+    }
+    if (attachments.overQuota(req.user.id, sealedFiles)) {
+      plainFiles.forEach((f) => f.content.fill(0));
+      return res.status(413).json({ error: 'attachment quota exceeded' });
+    }
+    if (sealedFiles.length) sendingWithFiles.add(req.user.id);
 
     // With a verified relay sender (no domain of our own), the visible name says who
     // wrote it and replies go back to that verified mailbox, since our own addresses
@@ -69,6 +80,7 @@ async function sendExternal(req, res) {
       return res.status(502).json({ error: 'the mail relay did not accept the message' });
     } finally {
       for (const f of plainFiles) f.content.fill(0); // best effort: drop the readable copy
+      sendingWithFiles.delete(req.user.id);
     }
 
     // Delivered: keep only the sender's own copy, which the browser encrypted.
