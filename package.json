@@ -1,0 +1,21 @@
+{
+  "name": "sealed-mail",
+  "version": "0.1.0",
+  "private": true,
+  "description": "End-to-end encrypted webmail MVP. The server stores only ciphertext; message bodies and private keys never reach it in readable form.",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js"
+  },
+  "dependencies": {
+    "@simplewebauthn/server": "14.0.3",
+    "cookie-parser": "^1.4.7",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.4.1",
+    "helmet": "^8.0.0"
+  }
+}

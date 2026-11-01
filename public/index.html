@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Sealed Mail</title>
+<link rel="preload" href="/fonts/source-serif-4-var.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/fonts/atkinson-hyperlegible-next-var.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/css/styles.css">
+</head>
+<body>
+<header class="topbar">
+  <span class="brand">Sealed Mail</span>
+  <span class="spacer"></span>
+  <span id="whoami" class="whoami" hidden></span>
+  <button id="logoutBtn" class="btn ghost" type="button" hidden>Salir</button>
+</header>
+
+<!-- Sign in / create account -->
+<main id="authView" class="page" hidden>
+  <div class="access">
+    <section class="pitch">
+      <h1 id="heroLine">Lo que escribes aquí solo lo lee quien lo recibe.</h1>
+      <p class="lead">Cada mensaje se cifra en tu navegador antes de salir. El servidor guarda sobres cerrados que no puede abrir.</p>
+      <figure class="envelope">
+        <div class="frame tint">
+          <div id="heroCipher" class="window sealing" aria-live="polite">Cifrando la frase…</div>
+        </div>
+        <figcaption>La frase de arriba, cifrada ahora mismo en este navegador con una clave que no sale de él.
+          Esto es todo lo que llega a ver el servidor.</figcaption>
+      </figure>
+    </section>
+
+    <div class="sheet access-card">
+      <div class="tabs">
+        <button id="tabLogin" class="tab active" type="button">Entrar</button>
+        <button id="tabRegister" class="tab" type="button">Crear cuenta</button>
+      </div>
+      <form id="authForm" autocomplete="off">
+        <label>Correo
+          <input id="email" type="email" required autocomplete="username" placeholder="tu@sealed.local">
+        </label>
+        <label>Contraseña
+          <input id="password" type="password" required autocomplete="current-password">
+        </label>
+        <p id="pwHint" class="hint" hidden>Mínimo 10 caracteres. Al crear la cuenta recibirás un código de
+          recuperación: junto con la contraseña es la única llave de tus correos.</p>
+        <button id="authSubmit" class="btn primary block" type="submit">Entrar</button>
+        <p id="authError" class="error" role="alert" hidden></p>
+      </form>
+      <div id="authAlt" class="alt">
+        <button id="passkeyLoginBtn" class="btn block" type="button">Entrar con Face ID o Touch ID</button>
+        <p id="altError" class="error" role="alert" hidden></p>
+        <button id="forgotBtn" class="link" type="button">He olvidado la contraseña</button>
+      </div>
+    </div>
+  </div>
+</main>
+
+<!-- Recover with the recovery code -->
+<main id="recoverView" class="page" hidden>
+  <div class="narrow">
+    <form id="recoverForm" class="sheet" autocomplete="off">
+      <h2 class="screen-title">Recuperar la cuenta</h2>
+      <p class="hint">Escribe el código de recuperación que guardaste al crear la cuenta y elige una contraseña
+        nueva. Conservarás todos tus correos.</p>
+      <label>Correo
+        <input id="recEmail" type="email" required autocomplete="username">
+      </label>
+      <label>Código de recuperación
+        <input id="recCode" class="exact" type="text" required autocomplete="off" spellcheck="false"
+          autocapitalize="characters" placeholder="ABCD-EFGH-…">
+      </label>
+      <label>Contraseña nueva
+        <input id="recNewPw" type="password" required minlength="10" autocomplete="new-password">
+      </label>
+      <button id="recSubmit" class="btn primary block" type="submit">Comprobar el código</button>
+      <p id="recError" class="error" role="alert" hidden></p>
+      <button id="recBack" class="link" type="button">Volver a entrar</button>
+    </form>
+  </div>
+</main>
+
+<!-- A freshly generated recovery code, shown once -->
+<main id="codeView" class="page" hidden>
+  <div class="narrow">
+    <div class="sheet">
+      <h2 class="screen-title">Guarda tu código de recuperación</h2>
+      <p class="hint">Si olvidas la contraseña, este código es la única forma de volver a entrar sin perder tus
+        correos. Cópialo en papel o en tu gestor de contraseñas. No se volverá a mostrar.</p>
+      <div id="recoveryCode" class="code"></div>
+      <div class="row">
+        <button id="copyCodeBtn" class="btn" type="button">Copiar el código</button>
+      </div>
+      <label class="check"><input id="codeSaved" type="checkbox"> Lo he guardado en un lugar seguro</label>
+      <button id="codeContinue" class="btn primary block" type="button" disabled>Continuar</button>
+      <p id="codeError" class="error" role="alert" hidden></p>
+      <button id="codeCancel" class="link" type="button" hidden>Cancelar y conservar el código anterior</button>
+    </div>
+  </div>
+</main>
+
+<main id="appView" class="app" hidden>
+  <nav class="sidebar" aria-label="Carpetas">
+    <button id="composeBtn" class="btn primary block" type="button">Escribir</button>
+    <button class="navBtn active" data-box="inbox" type="button">Entrada</button>
+    <button class="navBtn" data-box="sent" type="button">Enviados</button>
+    <button id="securityBtn" class="navBtn" type="button">Seguridad</button>
+  </nav>
+
+  <section class="content">
+    <div id="listView" class="content-inner">
+      <h2 id="boxTitle" class="panel-title">Entrada</h2>
+      <div class="sheet">
+        <ul id="messageList" class="messages"></ul>
+        <p id="emptyBox" class="empty" hidden></p>
+      </div>
+    </div>
+
+    <div id="readView" class="content-inner" hidden>
+      <div class="row"><button id="backBtn" class="btn ghost" type="button">Volver a la carpeta</button></div>
+      <article class="sheet reader">
+        <h3 id="readSubject"></h3>
+        <p class="meta"><span id="readFrom"></span><span id="readDate"></span></p>
+        <pre id="readBody" class="body"></pre>
+      </article>
+    </div>
+
+    <div id="composeView" class="content-inner" hidden>
+      <h2 class="panel-title">Mensaje nuevo</h2>
+      <form id="composeForm" class="sheet compose">
+        <label>Para
+          <input id="to" type="email" required placeholder="destinatario@sealed.local">
+        </label>
+        <p id="recipFp" class="hint" hidden></p>
+        <label>Asunto
+          <input id="subject" type="text" maxlength="200">
+        </label>
+        <label>Mensaje
+          <textarea id="body" rows="12" placeholder="Se cifra en tu navegador antes de salir."></textarea>
+        </label>
+        <div class="actions">
+          <button id="sendBtn" class="btn primary" type="submit">Cifrar y enviar</button>
+          <button id="composeBack" class="btn ghost" type="button">Descartar</button>
+        </div>
+        <p id="composeError" class="error" role="alert" hidden></p>
+        <p id="composeOk" class="ok" role="status" hidden>Enviado. Solo el destinatario puede abrirlo.</p>
+      </form>
+    </div>
+
+    <div id="securityView" class="content-inner" hidden>
+      <h2 class="panel-title">Seguridad</h2>
+
+      <!-- Sensitive actions ask for the password again ("sudo mode") -->
+      <form id="sudoForm" class="sudo" hidden>
+        <label>Confirma tu contraseña para continuar
+          <input id="sudoPw" type="password" autocomplete="current-password">
+        </label>
+        <div class="row">
+          <button id="sudoOk" class="btn primary" type="submit">Confirmar</button>
+          <button id="sudoCancel" class="btn ghost" type="button">Cancelar</button>
+        </div>
+        <p id="sudoError" class="error" role="alert" hidden></p>
+      </form>
+
+      <div class="sheet settings">
+        <section class="setting">
+          <h3>Tu huella de clave</h3>
+          <p class="hint">Quien te escribe ve esta misma huella al poner tu dirección. Si al compararla por otro
+            canal coincide, nadie ha cambiado tu clave por el camino.</p>
+          <div id="myFp" class="fingerprint"></div>
+        </section>
+
+        <section class="setting">
+          <h3>Código de recuperación</h3>
+          <p id="recStatus" class="hint"></p>
+          <button id="rotateCodeBtn" class="btn" type="button">Generar un código nuevo</button>
+          <p id="rotateMsg" class="hint" hidden></p>
+        </section>
+
+        <section class="setting">
+          <h3>Face ID y Touch ID</h3>
+          <p class="hint">Entra sin contraseña. Tu cara o tu huella no salen nunca del dispositivo: el chip seguro
+            te reconoce y entrega una llave que solo tu navegador usa para abrir tu clave privada.</p>
+          <ul id="passkeyList" class="plist"></ul>
+          <div class="add-device">
+            <label>Nombre del dispositivo
+              <input id="passkeyLabel" type="text" maxlength="60" placeholder="MacBook de casa">
+            </label>
+            <button id="addPasskeyBtn" class="btn primary" type="button">Añadir este dispositivo</button>
+          </div>
+          <p id="passkeyMsg" class="hint" role="status" hidden></p>
+        </section>
+
+        <section class="setting">
+          <h3>Sesiones abiertas</h3>
+          <p class="hint">Si entraste desde un ordenador que no es tuyo, cierra aquí todas las sesiones salvo esta.</p>
+          <button id="revokeOthersBtn" class="btn" type="button">Cerrar las demás sesiones</button>
+          <p id="sessionsMsg" class="hint" role="status" hidden></p>
+        </section>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script type="module" src="/js/app.js"></script>
+</body>
+</html>
