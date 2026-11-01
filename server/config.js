@@ -79,6 +79,14 @@ module.exports = {
       // back to it. Leave empty when MAIL_DOMAIN is a real, authenticated domain.
       from: (process.env.SMTP_OUT_FROM || '').trim().toLowerCase(),
     },
+    // Receiving through Resend (MX of MAIL_DOMAIN pointing at Resend). The app polls
+    // Resend's API instead of exposing a webhook, so it can run without a public URL.
+    // Reading received mail needs a FULL-ACCESS key: see docs/SECURITY.md.
+    resend: {
+      receiveKey: process.env.RESEND_RECEIVE_KEY || '',
+      apiBase: (process.env.RESEND_API_BASE || 'https://api.resend.com').replace(/\/+$/, ''),
+      pollMs: Math.max(Number(process.env.RESEND_POLL_MS) || 15_000, 250),
+    },
   },
   limits: {
     ciphertextBytes: 256 * 1024,

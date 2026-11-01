@@ -83,6 +83,12 @@ CREATE TABLE IF NOT EXISTS passkeys (
 );
 CREATE INDEX IF NOT EXISTS idx_passkeys_user ON passkeys(user_id);
 
+-- Inbound messages already taken from a provider (Resend), so each is sealed once.
+CREATE TABLE IF NOT EXISTS inbound_seen (
+  provider_id TEXT PRIMARY KEY,
+  seen_at     INTEGER NOT NULL
+);
+
 -- Single-use WebAuthn challenges with a short expiry. Login challenges have no
 -- user yet (usernameless sign-in: the passkey itself says whose it is).
 CREATE TABLE IF NOT EXISTS webauthn_challenges (

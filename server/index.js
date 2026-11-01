@@ -12,6 +12,7 @@ const recovery = require('./recovery');
 const passkey = require('./passkey');
 const smtpOut = require('./smtp-out');
 const { startInboundSmtp } = require('./smtp-in');
+const { startResendInbound } = require('./resend-in');
 
 const app = express();
 app.disable('x-powered-by');
@@ -140,5 +141,7 @@ app.listen(config.port, () => {
   console.log(`sealed-mail listening on http://localhost:${config.port} (${config.isProd ? 'production' : 'development'})`);
 });
 
-// Real email in: other mail servers (or any mail client) deliver to our addresses here.
+// Real email in: other mail servers (or any mail client) deliver to our addresses here,
+// and, when RESEND_RECEIVE_KEY is set, mail for MAIL_DOMAIN is collected from Resend.
 startInboundSmtp();
+startResendInbound();

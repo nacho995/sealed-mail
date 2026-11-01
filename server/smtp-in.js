@@ -29,17 +29,34 @@ function cleanAddress(addr) {
   return a.length <= config.limits.emailLen && /^[^\s@<>"]+@[^\s@<>"]+$/.test(a) ? a : '';
 }
 
-async function deliver(raw, session) {
+// Only the plain verdict words are kept (e.g. "pass", "fail"), whatever shape the
+// provider reports them in.
+function verdicts(authentication) {
+  if (!authentication || typeof authentication !== 'object') return undefined;
+  const pick = (v) => {
+    const s = typeof v === 'string' ? v : v && (v.result || v.status || v.verdict);
+    return typeof s === 'string' && /^[a-z_]{1,20}$/i.test(s) ? s.toLowerCase() : 'unknown';
+  };
+  return { spf: pick(authentication.spf), dkim: pick(authentication.dkim), dmarc: pick(authentication.dmarc) };
+}
+
+// Seals one raw RFC 822 message for its local recipients and stores only ciphertext.
+// Shared by the SMTP server below and by the Resend poller (resend-in.js).
+//   recipients:     envelope recipient addresses (only existing local accounts are used)
+//   envelopeFrom:   fallback sender when the From header is missing or invalid
+//   authentication: SPF/DKIM/DMARC verdicts from the receiving provider, if any
+async function deliverRaw(raw, { recipients: rcpts, envelopeFrom, authentication } = {}) {
   const mail = await simpleParser(raw, { skipImageLinks: true, skipTextLinks: true });
-  const recipients = [...new Set(session.envelope.rcptTo.map((r) => cleanAddress(r.address)))]
+  const recipients = [...new Set((rcpts || []).map(cleanAddress))]
     .map((a) => getUser.get(a))
     .filter(Boolean);
   if (!recipients.length) throw smtpError(550, 'No such user here');
 
   // The From header is whatever the sender claims: ordinary SMTP does not prove it.
-  // It is stored as the sender but the message is flagged external, and the UI says so.
+  // It is stored as the sender but the message is flagged external, and the UI says so
+  // unless the provider's DMARC check passed.
   const from = cleanAddress(mail.from && mail.from.value && mail.from.value[0] && mail.from.value[0].address)
-    || cleanAddress(session.envelope.mailFrom && session.envelope.mailFrom.address)
+    || cleanAddress(envelopeFrom)
     || 'remitente-desconocido@invalid';
   const attachments = (mail.attachments || []).length;
   let body = (mail.text || '').slice(0, MAX_BODY_CHARS); // HTML-only mail arrives converted to text
@@ -50,6 +67,7 @@ async function deliver(raw, session) {
     to: recipients.map((u) => u.email),
     subject: String(mail.subject || '').slice(0, MAX_SUBJECT),
     body,
+    auth: verdicts(authentication), // sealed with the message, like everything else
   };
   const sealed = await sealForRecipients(content, recipients.map((u) => u.pub_key));
   db.transaction(() => {
@@ -93,7 +111,10 @@ function startInboundSmtp() {
         chunks.length = 0;
         try {
           if (stream.sizeExceeded || size > inbound.maxBytes) return callback(smtpError(552, 'Message too large'));
-          await deliver(raw, session);
+          await deliverRaw(raw, {
+            recipients: session.envelope.rcptTo.map((r) => r.address),
+            envelopeFrom: session.envelope.mailFrom && session.envelope.mailFrom.address,
+          });
           return callback();
         } catch (err) {
           return callback(err.responseCode ? err : smtpError(451, 'Temporary failure, try again later'));
@@ -114,4 +135,4 @@ function startInboundSmtp() {
   return server;
 }
 
-module.exports = { startInboundSmtp };
+module.exports = { startInboundSmtp, deliverRaw, cleanAddress };

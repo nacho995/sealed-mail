@@ -12,15 +12,39 @@ nothing on it worth reading, leaking or training a model on.
   send out leaves as a normal email (the other side cannot read anything else), the
   app warns you before sending, and your Sent copy is stored encrypted.
 
+> [!IMPORTANT]
+> **Pending: email with the outside world is not live yet.** The code is finished
+> and tested (SMTP in and out, sending through Resend or SendGrid, receiving polled
+> from Resend: 33 end-to-end checks). What is missing is infrastructure, not code.
+> Real delivery needs **a domain you own whose DNS points at the mail provider**, and
+> for this deployment those DNS records were never added. As things stand:
+>
+> | | Status |
+> |---|---|
+> | Mail between Sealed Mail users (end-to-end encrypted) | ✅ works |
+> | Writing to / receiving from Gmail, Outlook… **on your machine** (Mailpit, `npm run mail:test`) | ✅ works |
+> | Writing to / receiving from Gmail, Outlook… **over the internet** | ❌ **not active: needs a verified domain** |
+>
+> To turn it on:
+> 1. Add a domain or subdomain you own in Resend, with sending and receiving enabled
+>    (a subdomain such as `mail.example.com` keeps your existing mailboxes untouched).
+> 2. Create the DNS records Resend lists (DKIM TXT, SPF MX + TXT, return-path
+>    CNAME, inbound MX) at your DNS provider, and verify the domain in Resend.
+> 3. Set the Resend block of `.env.example` in your `.env` and restart.
+>
+> To only *send* without a domain, `npm run setup:gmail` sends through your own Gmail
+> account (or `npm run setup:sendgrid` through SendGrid's single-sender verification).
+> Replies then go to that mailbox, not to the app.
+
 ## The app
 
 | Sign in | Inbox | Security |
 |---|---|---|
-| ![Sign-in page: the headline is encrypted live and shown inside an envelope window](docs/images/app-sign-in.jpg) | ![Inbox with an unreadable message drawn as a sealed envelope and a spoofed sender flagged](docs/images/app-inbox.jpg) | ![Security panel: key fingerprint, recovery code, passkeys, sessions](docs/images/app-security.jpg) |
+| ![Sign-in page: the headline is typed out, then shown encrypted as an ASCII-armored block](docs/images/app-sign-in.jpg) | ![Inbox as a one-line-per-message index: new mail flagged N, a spoofed sender flagged !, an unverified outside sender flagged ?, an unreadable message shown as cipher](docs/images/app-inbox.jpg) | ![Security panel: key fingerprint, recovery code, passkeys, sessions](docs/images/app-security.jpg) |
 
 - **Write to any address.** Sealed Mail recipients get end-to-end encryption; any
   other address gets an ordinary email through your SMTP relay (Mailpit locally,
-  SendGrid or any SMTP provider for real delivery).
+  Gmail, SendGrid or any SMTP provider for real delivery).
 - **Receive from anyone.** A built-in SMTP server accepts mail for your accounts
   only (never an open relay), seals it on arrival and flags it "from outside,
   sender not verified", because ordinary email cannot prove who sent it.
@@ -70,31 +94,12 @@ secret that never leaves his side:
 | Alter a message unnoticed | **No**: AES-GCM authentication |
 | Learn passwords | **No**: it receives a PBKDF2-derived key and stores `scrypt` of it |
 | Tell which addresses have accounts | **Partly**: login, recovery and passkey sign-in give constant-shape answers (fake salts, usernameless passkeys), but sign-up says when an address is taken and logged-in users can look up recipients |
-| Hand out a fake public key | **Yes**, unless users compare fingerprints (demo step 3) |
+| Hand out a fake public key | **Yes**, unless users compare fingerprints |
 | Serve malicious JavaScript | **Yes**: inherent to web-delivered E2E, not solved here |
 | See who mails whom, and when | **Yes**: metadata is not hidden |
 
 The full threat model, every hardening measure and the honest limitations are in
 [`docs/SECURITY.md`](docs/SECURITY.md).
-
-## Interactive demo: how the encryption holds up
-
-**[Play the server →](https://nacho995.github.io/sealed-mail/)** is a side page that
-explains the encryption: *you* are the server holding Alice's mail to Bob, and you
-try to read it, using the app's own crypto module in your browser (UI in Spanish).
-
-| Step | You try to… | What happens | Why |
-|---|---|---|---|
-| 1. Listen | read what you store | random-looking bytes, different on every keystroke | each message gets a fresh AES-256-GCM key and IV; only Bob's browser holds the key that opens it |
-| 2. Tamper | flip one bit before delivering | Bob rejects the whole message | AES-GCM authenticates the ciphertext |
-| 3. Swap the key | hand Alice your public key instead of Bob's | **it works**: you read it and re-seal it for Bob | encryption alone cannot stop a lying key server; the defence is comparing fingerprints, which the demo shows mismatching |
-| 4. Brute-force | dictionary-attack Bob's password-wrapped key | a weak password falls live; a random one would take ~10⁶ years on 1 000 GPUs | 310 000 rounds of PBKDF2 per guess, measured in your browser |
-| 5. Guess the recovery code | try random codes | nothing, ever | 160 random bits |
-
-Step 3 is deliberate: it is a real limitation of every web-delivered end-to-end
-system, and pretending otherwise would be the dishonest part.
-
-[![The demo: you swap Bob's public key for yours and read the message, while the fingerprints on both sides stop matching](docs/images/demo-swap-the-key.jpg)](https://nacho995.github.io/sealed-mail/)
 
 ## How it was built
 
@@ -139,7 +144,21 @@ To simulate someone outside writing to you (as another mail server would):
 npm run mail:test -- nombre@sealed.local "Hola" "Escrito desde fuera"
 ```
 
-**Sending for real (to any Gmail, Outlook… address) with SendGrid**, no domain needed:
+**Sending for real (to any Gmail, Outlook… address) with your Gmail account**, no
+domain needed:
+
+1. Turn on 2-Step Verification in your Google account, then create an app password
+   at myaccount.google.com/apppasswords (16 letters).
+2. Run `npm run setup:gmail` in your terminal. It asks for the address and the app
+   password (not shown while you type), logs in to `smtp.gmail.com` over TLS to check
+   them, writes `.env` with permissions 600 and can send you a test email.
+3. Restart. Mail now goes out from your Gmail address, signed by Google, so it is not
+   flagged as spoofed, and replies arrive in that Gmail inbox.
+
+An app password is not limited to sending: it also opens the whole mailbox over IMAP,
+and it sits in this server's `.env`. Prefer a Gmail account created only for this.
+
+**Or with SendGrid**, also without a domain:
 
 1. In SendGrid, *Settings → Sender Authentication → Single Sender Verification*:
    verify an address you own (for example your Gmail).
@@ -159,8 +178,18 @@ npm run mail:test -- nombre@sealed.local "Hola" "Escrito desde fuera"
    name, and replies arrive at that address. The connection to the relay must use
    TLS: the app refuses to send in clear text to any relay other than localhost.
 
+**Sending and receiving with your own domain through Resend** (recommended): add a
+subdomain you own in Resend with sending and receiving enabled (for example
+`mail.example.com`, so the main domain's existing mailboxes are untouched), create the
+DNS records Resend lists, then set in `.env` the Resend block shown in
+`.env.example`. Outgoing mail leaves from each user's own address. Incoming mail is
+**polled** from Resend's API every 15 seconds, so the app needs no public URL. Each
+message is sealed on arrival like any other, and the sender is marked verified when
+DMARC passed.
+
 Without a domain of your own, deliverability is limited (a gmail.com sender sent
-through SendGrid may land in spam). **Receiving mail from the internet** needs a
+through SendGrid fails DMARC and may land in spam; through Gmail itself it does not).
+**Receiving mail from the internet** needs a
 domain whose MX record points at this server, with the SMTP port exposed over TLS;
 set `MAIL_DOMAIN` to it and the same code handles it.
 
@@ -190,12 +219,6 @@ reaches the database, and open-relay refusal), recovery (including two simultane
 recoveries racing for the same code), password re-checks, passkey defences, session
 revocation and error handling. CI runs it on Node 22 and 24.
 
-### The demo locally
-
-```bash
-node demo/build.mjs   # assembles _site/ from demo/ plus the app's crypto, CSS and fonts
-```
-
 ## Out of scope (for now)
 
 - **Receiving from the internet** needs a domain (MX record) and the SMTP port
@@ -208,18 +231,25 @@ node demo/build.mjs   # assembles _site/ from demo/ plus the app's crypto, CSS a
 ```
 server/        Express app: auth, recovery, passkeys, mail, rate limits, CSP,
                SMTP in (smtp-in.js) and out (smtp-out.js)
-scripts/       send-test-mail.mjs: "someone outside writes to you"
+scripts/       send-test-mail.mjs: "someone outside writes to you";
+               setup-smtp.mjs: connects Gmail or SendGrid for outgoing mail
 public/        the web app (no inline scripts); js/crypto.js holds ALL cryptography
-demo/          "play the server" (built to GitHub Pages)
 tests/e2e.mjs  end-to-end test suite
 docs/          SECURITY.md and README images
 ```
 
 ## Design
 
-Ink on paper, with one motif: the security tint printed inside envelopes so a letter
-cannot be read against the light. Everywhere it appears it means "this is what
-everyone else sees". Type: **Source Serif 4** for what people write, **Atkinson
-Hyperlegible** for the interface and its Mono cut for strings copied character by
-character (recovery codes, fingerprints), designed so `0/O` and `l/1/I` cannot be
-confused. All fonts are SIL Open Font License 1.1, self-hosted.
+A terminal mail reader in the spirit of mutt and pine: amber phosphor on black, one
+theme. The app is driven from the keyboard (`c` write, `e` inbox, `v` sent,
+`s` security, `j`/`k` or arrows to move, Enter to open, `q` or Esc to go back) and
+every key is also a button for touch screens. A status bar always says where you are
+and which keys work there. Each folder is a one-line-per-message index whose flag
+column is never truncated, so warnings live there: `N` new, `!` the message claims a
+different sender, `?` from outside and not verified. The sign-in page types its
+headline, then encrypts it in your browser and shows the result ASCII-armored: that
+block is all the server ever sees.
+
+Type: **VT323** for titles and the bars, **Atkinson Hyperlegible Mono** for everything
+else, designed so `0/O` and `l/1/I` cannot be confused in recovery codes and
+fingerprints. All fonts are SIL Open Font License 1.1, self-hosted.

@@ -14,6 +14,8 @@ import { fileURLToPath } from 'node:url';
 import { SMTPServer } from 'smtp-server';
 import { simpleParser } from 'mailparser';
 import nodemailer from 'nodemailer';
+import MailComposer from 'nodemailer/lib/mail-composer/index.js';
+import http from 'node:http';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -49,6 +51,37 @@ const outside = new SMTPServer({
 const outsidePort = await freePort();
 await new Promise((resolve) => outside.listen(outsidePort, '127.0.0.1', resolve));
 
+// A stand-in for Resend's Receiving API: list, detail, and the raw message download.
+// Push { id, to, from, subject, text, auth } into fakeResendInbox to "receive" mail.
+const RESEND_TEST_KEY = 'test-resend-key';
+const fakeResendInbox = [];
+const fakeResendAuth = { ok: 0, rejected: 0 };
+const resendPort = await freePort();
+const resendBase = `http://127.0.0.1:${resendPort}`;
+const fakeResend = http.createServer(async (req, res) => {
+  const url = new URL(req.url, resendBase);
+  const send = (status, body) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)); };
+  if (url.pathname.startsWith('/raw/')) {
+    const m = fakeResendInbox.find((x) => x.id === url.pathname.slice(5));
+    if (!m) return send(404, {});
+    const raw = await new MailComposer({ from: m.from, to: m.to, subject: m.subject, text: m.text }).compile().build();
+    res.writeHead(200, { 'Content-Type': 'message/rfc822' });
+    return res.end(raw);
+  }
+  if (req.headers.authorization !== `Bearer ${RESEND_TEST_KEY}`) { fakeResendAuth.rejected++; return send(401, { name: 'invalid_api_key' }); }
+  fakeResendAuth.ok++;
+  if (url.pathname === '/emails/receiving') {
+    return send(200, { object: 'list', has_more: false, data: fakeResendInbox.map((m) => ({ id: m.id, to: [m.to], from: m.from, subject: m.subject })) });
+  }
+  const m = fakeResendInbox.find((x) => `/emails/receiving/${x.id}` === url.pathname);
+  if (!m) return send(404, {});
+  return send(200, {
+    id: m.id, to: [m.to], from: m.from, subject: m.subject, text: m.text, html: null,
+    authentication: m.auth, raw: { download_url: `${resendBase}/raw/${m.id}` },
+  });
+});
+await new Promise((resolve) => fakeResend.listen(resendPort, '127.0.0.1', resolve));
+
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sealed-mail-test-'));
 const server = spawn(process.execPath, [path.join(root, 'server/index.js')], {
   env: {
@@ -70,6 +103,9 @@ const server = spawn(process.execPath, [path.join(root, 'server/index.js')], {
     SMTP_OUT_USER: '',
     SMTP_OUT_PASS: '',
     SMTP_OUT_FROM: '',
+    RESEND_RECEIVE_KEY: RESEND_TEST_KEY,
+    RESEND_API_BASE: resendBase,
+    RESEND_POLL_MS: '300',
   },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
@@ -417,6 +453,50 @@ const wrongDomain = await makeClient().req('POST', '/api/register', {
 assert.equal(wrongDomain.status, 400);
 ok('accounts can only be created on the mail domain (no claiming a gmail.com address)');
 
+// ---------- inbound through Resend (polled API, no public URL) ----------
+const waitFor = async (fn, ms = 6000) => {
+  const t = Date.now();
+  for (;;) {
+    const v = await fn();
+    if (v) return v;
+    if (Date.now() - t > ms) return null;
+    await new Promise((r) => setTimeout(r, 150));
+  }
+};
+const viaResendSubject = `Via Resend ${marker}`;
+fakeResendInbox.push(
+  { id: 'rs-1', to: bobEmail, from: 'socia@empresa.com', subject: viaResendSubject, text: `Recibido por Resend. ${marker}-rs`, auth: { spf: 'pass', dkim: 'pass', dmarc: 'pass' } },
+  { id: 'rs-2', to: 'nadie@sealed.local', from: 'x@empresa.com', subject: 'para nadie', text: 't', auth: { dmarc: 'pass' } },
+  { id: 'rs-3', to: 'alguien@otro-dominio.com', from: 'x@empresa.com', subject: 'otro dominio', text: 't', auth: { dmarc: 'pass' } },
+);
+const findViaResend = async () => {
+  const list = (await BF.req('GET', '/api/messages?box=inbox')).data.messages;
+  const out = [];
+  for (const m of list.filter((x) => x.external === 1)) {
+    const c = await seal.decryptBody(await seal.unwrapMessageKey(m.encKey, bobFinal.privKey), m.ciphertext, m.iv);
+    if (c.subject === viaResendSubject) out.push({ m, c });
+  }
+  return out.length ? out : null;
+};
+const viaResend = await waitFor(findViaResend);
+assert.ok(viaResend, 'mail polled from Resend reached the inbox');
+assert.equal(viaResend[0].m.sender, 'socia@empresa.com');
+assert.ok(viaResend[0].c.body.includes(`${marker}-rs`));
+assert.deepEqual(viaResend[0].c.auth, { spf: 'pass', dkim: 'pass', dmarc: 'pass' });
+ok('mail received by Resend is polled, sealed for the recipient and keeps the DMARC verdict (sealed too)');
+
+await new Promise((r) => setTimeout(r, 1200)); // several more polls
+assert.equal((await findViaResend()).length, 1, 'a polled message must be delivered exactly once');
+assert.equal(fakeResendAuth.rejected, 0, 'every call to Resend carried the receive key');
+assert.ok(fakeResendAuth.ok >= 3);
+ok('each Resend message is delivered once across repeated polls, always authenticated with the key');
+
+const dbAfterResend = fs.readdirSync(tmp).filter((f) => f.startsWith('test.db'))
+  .map((f) => fs.readFileSync(path.join(tmp, f)).toString('latin1')).join('');
+assert.ok(!dbAfterResend.includes(`${marker}-rs`) && !dbAfterResend.includes('Recibido por Resend'), 'plaintext found in the database!');
+ok('mail polled from Resend is not stored in the clear either');
+
 outside.close();
+fakeResend.close();
 console.log(`\nALL ${passed} CHECKS PASSED`);
 process.exit(0); // the child server keeps the event loop alive; the exit hook cleans up

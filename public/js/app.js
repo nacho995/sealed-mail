@@ -39,6 +39,11 @@ function showPanel(id) {
   if (id !== 'securityView') { clearPendingPasskey(); closeSudo('cancelled'); }
 }
 
+// An outside sender counts as verified only when the receiving provider's DMARC check passed.
+function senderVerified(content) {
+  return !!(content && content.auth && content.auth.dmarc === 'pass');
+}
+
 // Is the client-authored "from" lying about who sent this? m.sender is set by the
 // server from the authenticated session, so it is the trustworthy value.
 function spoofedFrom(content, m) {
@@ -56,18 +61,40 @@ function passkeyError(err) {
   return 'No se ha podido completar con Face ID o Touch ID.';
 }
 
-// ---- the envelope on the sign-in page ----
-// Encrypts the headline for real, with a throwaway key, so the visitor sees exactly
-// what a stored message looks like to the server.
+// ---- the sign-in session ----
+// The headline is typed out once, then encrypted for real with a throwaway key and
+// shown ASCII-armored, so the visitor sees exactly what the server would store.
+const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+function typeHeadline(text) {
+  const out = $('heroTyped');
+  if (reducedMotion) { out.textContent = text; return Promise.resolve(); }
+  return new Promise((resolve) => {
+    let i = 0;
+    const step = () => {
+      out.textContent = text.slice(0, ++i);
+      if (i < text.length) setTimeout(step, 28 + Math.random() * 40); else resolve();
+    };
+    step();
+  });
+}
+
+// PGP-style armor: fixed-width lines between BEGIN/END markers.
+function armor(b64) {
+  const lines = b64.match(/.{1,64}/g) || [];
+  return ['-----BEGIN SEALED MESSAGE-----', 'Version: sealed-mail 0.1 (AES-256-GCM)', '', ...lines,
+    '-----END SEALED MESSAGE-----'].join('\n');
+}
+
 async function sealHero() {
-  const el = $('heroCipher');
+  const line = $('heroLine').dataset.line;
+  const box = $('heroCipher');
+  await typeHeadline(line);
   try {
-    const { ciphertext } = await seal.encryptBody($('heroLine').textContent);
-    el.textContent = ciphertext;
-    el.classList.remove('sealing');
-    el.classList.add('sealed');
+    const { ciphertext } = await seal.encryptBody(line);
+    box.textContent = armor(ciphertext);
   } catch {
-    el.textContent = 'Este navegador no permite cifrar aquí (Web Crypto no está disponible).';
+    box.textContent = 'Este navegador no permite cifrar aquí (Web Crypto no está disponible).';
   }
 }
 
@@ -87,7 +114,7 @@ function showRecoveryCode(code, { onConfirm, onCancel = null }) {
   }
   $('codeSaved').checked = false;
   $('codeContinue').disabled = true;
-  $('copyCodeBtn').textContent = 'Copiar el código';
+  $('copyCodeBtn').textContent = 'copiar el código';
   setMsg($('codeError'), '');
   $('codeCancel').hidden = !onCancel;
   showScreen('codeView');
@@ -111,10 +138,10 @@ $('copyCodeBtn').addEventListener('click', async () => {
   if (!shownCode) return;
   try {
     await navigator.clipboard.writeText(shownCode);
-    $('copyCodeBtn').textContent = 'Copiado';
+    $('copyCodeBtn').textContent = 'copiado';
   } catch {
     window.getSelection().selectAllChildren($('recoveryCode'));
-    $('copyCodeBtn').textContent = 'Seleccionado: cópialo con ⌘C';
+    $('copyCodeBtn').textContent = 'seleccionado: cópialo con ⌘C';
   }
 });
 
@@ -124,7 +151,7 @@ function renderAuthMode() {
   const isReg = authMode === 'register';
   $('tabLogin').classList.toggle('active', !isReg);
   $('tabRegister').classList.toggle('active', isReg);
-  $('authSubmit').textContent = isReg ? 'Crear cuenta' : 'Entrar';
+  $('authSubmit').textContent = isReg ? 'crear cuenta' : 'entrar';
   $('password').setAttribute('autocomplete', isReg ? 'new-password' : 'current-password');
   $('pwHint').hidden = !isReg;
   $('authAlt').hidden = isReg;
@@ -309,24 +336,62 @@ function setNavActive(target) {
   document.querySelectorAll('.navBtn').forEach((b) => b.classList.toggle('active', b === target));
 }
 
+// Status bar: where you are on the left, the keys that work here on the right.
+function setStatus(text, keys) {
+  $('statusText').textContent = text;
+  $('statusKeys').textContent = keys;
+}
+const FOLDER_KEYS = 'j/k mover  ↵ abrir  c escribir  s seguridad';
+
+// The folder index: one row per message, one of them selected, as in mutt or pine.
+const index = { rows: [], sel: -1, load: 0 };
+
+function selectRow(i, { focus = true } = {}) {
+  if (!index.rows.length) return;
+  index.sel = Math.max(0, Math.min(i, index.rows.length - 1));
+  index.rows.forEach((r, n) => r.li.classList.toggle('selected', n === index.sel));
+  const li = index.rows[index.sel].li;
+  if (focus) li.focus();
+  li.scrollIntoView({ block: 'nearest' });
+}
+
+function folderName(box) { return box === 'sent' ? 'enviados' : 'entrada'; }
+
+function folderStatus(box, messages) {
+  const n = messages.length;
+  let text = `${folderName(box)}  ${n} ${n === 1 ? 'mensaje' : 'mensajes'}`;
+  const unread = box === 'inbox' ? messages.filter((m) => !m.read).length : 0;
+  if (unread) text += `, ${unread} sin leer`;
+  setStatus(text, FOLDER_KEYS);
+}
+
 async function openBox(box) {
   state.box = box;
   setNavActive(document.querySelector(`.navBtn[data-box="${box}"]`));
-  $('boxTitle').textContent = box === 'sent' ? 'Enviados' : 'Entrada';
+  $('boxTitle').textContent = folderName(box);
   showPanel('listView');
+  setStatus(`${folderName(box)}  cargando`, FOLDER_KEYS);
   const list = $('messageList');
   list.textContent = '';
+  index.rows = []; index.sel = -1;
+  // A newer navigation (another folder, compose, security) may happen while this one
+  // is still loading; when it does, this load must not touch the screen.
+  const load = ++index.load;
+  const stale = () => load !== index.load || $('listView').hidden;
   let messages;
   try {
     ({ messages } = await api.messages(box));
+    if (stale()) return;
   } catch (err) {
     if (err && err.message === 'not authenticated') { sessionEnded('Tu sesión se ha cerrado. Vuelve a entrar.'); return; }
+    if (stale()) return;
     setMsg($('emptyBox'), 'No se ha podido cargar la carpeta. Vuelve a intentarlo en un momento.');
+    setStatus(`${folderName(box)}  sin conexión con el servidor`, FOLDER_KEYS);
     return;
   }
   setMsg($('emptyBox'), messages.length ? '' : (box === 'sent'
-    ? 'Todavía no has enviado nada.'
-    : 'Tu bandeja está vacía. Escribe a alguien que también use Sealed Mail: solo esa persona podrá leerlo.'));
+    ? 'Todavía no has enviado nada. Pulsa c para escribir.'
+    : 'Tu bandeja está vacía. Pulsa c para escribir a alguien que también use Sealed Mail: solo esa persona podrá leerlo.'));
 
   for (const m of messages) {
     let content = null;
@@ -334,8 +399,13 @@ async function openBox(box) {
       const messageKey = await seal.unwrapMessageKey(m.encKey, state.privKey);
       content = await seal.decryptBody(messageKey, m.ciphertext, m.iv);
     } catch { content = null; }
-    list.appendChild(messageRow(m, box, content));
+    if (stale()) return;
+    const li = messageRow(m, box, content, index.rows.length);
+    index.rows.push({ li, m, content });
+    list.appendChild(li);
   }
+  folderStatus(box, messages);
+  if (index.rows.length) selectRow(0, { focus: false });
 }
 
 function el(tag, className, text) {
@@ -345,64 +415,85 @@ function el(tag, className, text) {
   return node;
 }
 
-// Built with textContent only: subject/body/from are attacker-controlled plaintext.
-function messageRow(m, box, content) {
+// One index line: flag, date, who, subject. Built with textContent only, because
+// subject, body and from are attacker-controlled plaintext.
+function messageRow(m, box, content, position) {
   const li = el('li', 'msg');
+  const unread = box === 'inbox' && !m.read && content;
+  // The flag column is never truncated, so warnings live there too: the from column
+  // can be cut off with an ellipsis and take the spoof notice with it.
+  //   N new   ! the message claims another sender   ? from outside, sender not verified
+  const spoofed = box === 'inbox' && spoofedFrom(content, m);
+  const unverified = box === 'inbox' && m.external && !senderVerified(content);
+  const flag = el('span', 'msg-flag', (unread ? 'N' : ' ') + (spoofed ? '!' : unverified ? '?' : ''));
+  if (spoofed || unverified) {
+    flag.classList.add('alert');
+    flag.title = spoofed ? `Dice ser ${content.from}, pero lo envió ${m.sender}` : 'De fuera, sin verificar';
+  }
+  li.append(flag, el('span', 'msg-date', fmtDate(m.createdAt)));
+
   const from = el('span', 'msg-from');
   if (box === 'sent') {
-    from.textContent = 'Para ' + (content && content.to ? content.to.join(', ') : 'destinatario desconocido');
+    from.textContent = 'para ' + (content && content.to ? content.to.join(', ') : 'destinatario desconocido');
   } else {
     from.textContent = m.sender;
     if (spoofedFrom(content, m)) from.appendChild(el('span', 'spoof', ` dice ser ${content.from}`));
   }
-  // Ordinary email: arrived from outside (sender not provable) or left without E2E.
-  if (m.external) from.appendChild(el('span', 'badge', box === 'sent' ? 'correo normal' : 'de fuera, sin verificar'));
-  li.append(from, el('span', 'msg-date', fmtDate(m.createdAt)));
+  // Ordinary email: arrived from outside, or left without end-to-end encryption.
+  if (m.external) {
+    const label = box === 'sent' ? 'correo normal' : senderVerified(content) ? 'de fuera, verificado' : 'de fuera, sin verificar';
+    from.appendChild(el('span', 'badge', label));
+  }
+  li.append(from);
+
+  if (unread) li.classList.add('unread');
+  li.tabIndex = -1;
+  li.setAttribute('role', 'button');
+  li.addEventListener('click', () => { selectRow(position); if (content) openMessage(m, box, content); });
 
   if (!content) {
-    // Our key cannot open it: draw it as what it is, a closed envelope.
+    // Our key cannot open it: show it as what it is, bytes nobody here can read.
     li.classList.add('sealed');
-    const subject = el('span', 'msg-subject');
-    subject.append(el('span', 'seal tint'), document.createTextNode('Sobre cerrado'));
-    li.append(subject, el('span', 'msg-preview', 'Tu clave no puede abrir este mensaje.'));
+    li.append(el('span', 'msg-subject', '[cifrado] ░░░░░░░░░░░░░░░░░░░░'));
+    li.title = 'Tu clave no puede abrir este mensaje.';
     return li;
   }
-
-  li.append(
-    el('span', 'msg-subject', content.subject || 'Sin asunto'),
-    el('span', 'msg-preview', (content.body || '').slice(0, 140)),
-  );
-  if (box === 'inbox' && !m.read) li.classList.add('unread');
-  li.tabIndex = 0;
-  li.setAttribute('role', 'button');
-  const open = () => openMessage(m, box, content);
-  li.addEventListener('click', open);
-  li.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
+  li.append(el('span', 'msg-subject', content.subject || '(sin asunto)'));
   return li;
 }
 
 function openMessage(m, box, content) {
   showPanel('readView');
-  $('readSubject').textContent = content.subject || 'Sin asunto';
+  const subject = content.subject || '(sin asunto)';
+  $('readSubject').textContent = subject;
   const from = $('readFrom');
   if (box === 'sent') {
-    from.textContent = 'Para ' + (content.to || []).join(', ');
+    $('readFromLabel').textContent = 'Para';
+    from.textContent = (content.to || []).join(', ');
   } else {
-    from.textContent = 'De ' + m.sender;
+    $('readFromLabel').textContent = 'De';
+    from.textContent = m.sender;
     if (spoofedFrom(content, m)) from.appendChild(el('span', 'spoof', ` (el mensaje dice ser de ${content.from})`));
   }
   $('readDate').textContent = fmtDate(m.createdAt);
-  setMsg($('readNote'), !m.external ? '' : box === 'sent'
-    ? 'Salió como correo normal: quien gestione el correo del destinatario puede leerlo. Tu copia está cifrada.'
-    : 'Llegó de fuera como correo normal. El servidor lo cifró al recibirlo, pero no puede comprobar que el remitente sea quien dice ser.');
+  let note = '';
+  if (m.external && box === 'sent') {
+    note = 'Salió como correo normal: quien gestione el correo del destinatario puede leerlo. Tu copia está cifrada.';
+  } else if (m.external && senderVerified(content)) {
+    note = 'Llegó de fuera como correo normal y el servidor lo cifró al recibirlo. El dominio del remitente lo ha autenticado (DMARC), así que viene de quien dice.';
+  } else if (m.external) {
+    note = 'Llegó de fuera como correo normal y el servidor lo cifró al recibirlo, pero no se ha podido comprobar que el remitente sea quien dice ser.';
+  }
+  setMsg($('readNote'), note);
   $('readBody').textContent = content.body || '';
   if (box === 'inbox' && !m.read) { m.read = 1; api.markRead(m.id, box).catch(() => {}); }
+  setStatus(`${folderName(box)}  leyendo: ${subject}`, 'q volver  c escribir');
   $('backBtn').focus();
 }
 
 // ---- compose ----
-const SEND_SEALED = 'Cifrar y enviar';
-const SEND_PLAIN = 'Enviar sin cifrado de extremo a extremo';
+const SEND_SEALED = 'cifrar y enviar';
+const SEND_PLAIN = 'enviar sin cifrado de extremo a extremo';
 
 function resetCompose() {
   $('to').value = ''; $('subject').value = ''; $('body').value = '';
@@ -414,6 +505,7 @@ $('composeBtn').addEventListener('click', () => {
   setNavActive(null);
   showPanel('composeView');
   resetCompose();
+  setStatus('mensaje nuevo', 'esc salir del campo  e entrada');
   $('to').focus();
 });
 
@@ -565,11 +657,11 @@ async function renderSecurity() {
         el('small', null, `${p.kind}. Añadido el ${fmtDay(p.createdAt)}. ` +
           (p.lastUsedAt ? `Último uso: ${fmtDate(p.lastUsedAt)}.` : 'Sin usar todavía.')),
       );
-      const del = el('button', 'btn ghost', 'Quitar');
+      const del = el('button', 'btn ghost', 'quitar');
       del.type = 'button';
       // Two-step confirmation, built into the page.
       del.addEventListener('click', async () => {
-        if (del.dataset.armed !== '1') { del.dataset.armed = '1'; del.textContent = 'Quitar, seguro'; return; }
+        if (del.dataset.armed !== '1') { del.dataset.armed = '1'; del.textContent = 'quitar, seguro'; return; }
         try { await api.deletePasskey(p.id); } catch { /* the re-render shows the real state */ }
         renderSecurity();
       });
@@ -583,6 +675,7 @@ async function renderSecurity() {
 async function openSecurity() {
   setNavActive($('securityBtn'));
   showPanel('securityView');
+  setStatus('seguridad', 'e entrada  v enviados  c escribir');
   setMsg($('passkeyMsg'), ''); setMsg($('rotateMsg'), ''); setMsg($('sessionsMsg'), '');
   await renderSecurity();
 }
@@ -624,7 +717,7 @@ let pendingTimer = null;
 function clearPendingPasskey() {
   pendingPasskey = null;
   clearTimeout(pendingTimer);
-  $('addPasskeyBtn').textContent = 'Añadir este dispositivo';
+  $('addPasskeyBtn').textContent = 'añadir este dispositivo';
 }
 
 $('addPasskeyBtn').addEventListener('click', async () => {
@@ -641,9 +734,9 @@ $('addPasskeyBtn').addEventListener('click', async () => {
       pendingPasskey = { unwrap, challengeId, options, label };
       pendingTimer = setTimeout(() => {
         clearPendingPasskey();
-        setMsg($('passkeyMsg'), 'Ha pasado demasiado tiempo. Vuelve a pulsar «Añadir este dispositivo».');
+        setMsg($('passkeyMsg'), 'Ha pasado demasiado tiempo. Vuelve a pulsar «añadir este dispositivo».');
       }, CHALLENGE_TTL_MS - 15000);
-      btn.textContent = 'Usar Face ID o Touch ID ahora';
+      btn.textContent = 'usar Face ID o Touch ID ahora';
       setMsg($('passkeyMsg'), 'Contraseña correcta. Pulsa el botón y sigue las instrucciones de tu dispositivo.');
     } catch (err) {
       if (!err || err.message !== 'cancelled') setMsg($('passkeyMsg'), 'No se ha podido preparar el registro. Vuelve a intentarlo.');
@@ -687,6 +780,38 @@ $('revokeOthersBtn').addEventListener('click', async () => {
 document.querySelectorAll('.navBtn[data-box]').forEach((b) =>
   b.addEventListener('click', () => openBox(b.dataset.box)));
 $('backBtn').addEventListener('click', () => openBox(state.box));
+
+// ---- keyboard ----
+// Single-letter keys, as in a terminal mail reader. They never fire while the user
+// is typing in a field or holding a modifier, so ⌘C and friends keep working.
+function typingIn(target) {
+  return target instanceof HTMLElement &&
+    (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName));
+}
+
+document.addEventListener('keydown', (e) => {
+  if ($('appView').hidden || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (typingIn(e.target)) {
+    // Escape leaves the field, so the letter keys work again without the mouse.
+    if (e.key === 'Escape') e.target.blur();
+    return;
+  }
+  const key = e.key;
+  // Enter on a focused button or link belongs to that control.
+  if (key === 'Enter' && e.target instanceof Element && e.target.closest('button, a')) return;
+  const inFolder = !$('listView').hidden;
+  let handled = true;
+  if (key === 'c') $('composeBtn').click();
+  else if (key === 'e') openBox('inbox');
+  else if (key === 'v') openBox('sent');
+  else if (key === 's') openSecurity();
+  else if (inFolder && (key === 'j' || key === 'ArrowDown')) selectRow(index.sel + 1);
+  else if (inFolder && (key === 'k' || key === 'ArrowUp')) selectRow(index.sel - 1);
+  else if (inFolder && key === 'Enter' && index.sel >= 0) index.rows[index.sel].li.click();
+  else if (!inFolder && (key === 'q' || key === 'Escape')) openBox(state.box);
+  else handled = false;
+  if (handled) e.preventDefault();
+});
 
 function resetLocalState() {
   state.email = null; state.privKey = null; state.pubKeyB64 = null; state.recip = null;
