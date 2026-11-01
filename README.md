@@ -32,8 +32,9 @@ nothing on it worth reading, leaking or training a model on.
 >    CNAME, inbound MX) at your DNS provider, and verify the domain in Resend.
 > 3. Set the Resend block of `.env.example` in your `.env` and restart.
 >
-> To only *send* without a domain, `npm run setup:sendgrid` uses SendGrid's
-> single-sender verification instead (replies then go to that address, not to the app).
+> To only *send* without a domain, `npm run setup:gmail` sends through your own Gmail
+> account (or `npm run setup:sendgrid` through SendGrid's single-sender verification).
+> Replies then go to that mailbox, not to the app.
 
 ## The app
 
@@ -43,7 +44,7 @@ nothing on it worth reading, leaking or training a model on.
 
 - **Write to any address.** Sealed Mail recipients get end-to-end encryption; any
   other address gets an ordinary email through your SMTP relay (Mailpit locally,
-  SendGrid or any SMTP provider for real delivery).
+  Gmail, SendGrid or any SMTP provider for real delivery).
 - **Receive from anyone.** A built-in SMTP server accepts mail for your accounts
   only (never an open relay), seals it on arrival and flags it "from outside,
   sender not verified", because ordinary email cannot prove who sent it.
@@ -143,7 +144,21 @@ To simulate someone outside writing to you (as another mail server would):
 npm run mail:test -- nombre@sealed.local "Hola" "Escrito desde fuera"
 ```
 
-**Sending for real (to any Gmail, Outlook… address) with SendGrid**, no domain needed:
+**Sending for real (to any Gmail, Outlook… address) with your Gmail account**, no
+domain needed:
+
+1. Turn on 2-Step Verification in your Google account, then create an app password
+   at myaccount.google.com/apppasswords (16 letters).
+2. Run `npm run setup:gmail` in your terminal. It asks for the address and the app
+   password (not shown while you type), logs in to `smtp.gmail.com` over TLS to check
+   them, writes `.env` with permissions 600 and can send you a test email.
+3. Restart. Mail now goes out from your Gmail address, signed by Google, so it is not
+   flagged as spoofed, and replies arrive in that Gmail inbox.
+
+An app password is not limited to sending: it also opens the whole mailbox over IMAP,
+and it sits in this server's `.env`. Prefer a Gmail account created only for this.
+
+**Or with SendGrid**, also without a domain:
 
 1. In SendGrid, *Settings → Sender Authentication → Single Sender Verification*:
    verify an address you own (for example your Gmail).
@@ -173,7 +188,8 @@ message is sealed on arrival like any other, and the sender is marked verified w
 DMARC passed.
 
 Without a domain of your own, deliverability is limited (a gmail.com sender sent
-through SendGrid may land in spam). **Receiving mail from the internet** needs a
+through SendGrid fails DMARC and may land in spam; through Gmail itself it does not).
+**Receiving mail from the internet** needs a
 domain whose MX record points at this server, with the SMTP port exposed over TLS;
 set `MAIL_DOMAIN` to it and the same code handles it.
 
@@ -215,7 +231,8 @@ revocation and error handling. CI runs it on Node 22 and 24.
 ```
 server/        Express app: auth, recovery, passkeys, mail, rate limits, CSP,
                SMTP in (smtp-in.js) and out (smtp-out.js)
-scripts/       send-test-mail.mjs: "someone outside writes to you"
+scripts/       send-test-mail.mjs: "someone outside writes to you";
+               setup-smtp.mjs: connects Gmail or SendGrid for outgoing mail
 public/        the web app (no inline scripts); js/crypto.js holds ALL cryptography
 tests/e2e.mjs  end-to-end test suite
 docs/          SECURITY.md and README images

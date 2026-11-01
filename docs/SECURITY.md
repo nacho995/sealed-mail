@@ -239,8 +239,13 @@ in the clear on either side.
   messages per account per 15 minutes, so a hijacked session cannot get the domain
   blacklisted for spam.
 - Without a domain, `SMTP_OUT_FROM` sends from a sender address verified with the
-  relay (for example SendGrid's Single Sender). The visible name is the Sealed Mail
-  user, and replies go to that verified mailbox.
+  relay (for example SendGrid's Single Sender, or the Gmail account itself). The
+  visible name is the Sealed Mail user, and replies go to that verified mailbox.
+- **Gmail as the relay, what it exposes**: a Google app password is not scoped to
+  sending; it also grants IMAP access to that whole mailbox. It is stored in `.env`
+  (mode 600, git-ignored), so anyone who can read the server's `.env` can read that
+  Gmail account. The setup script says so and recommends a Gmail account dedicated
+  to Sealed Mail. A SendGrid key with only "Mail Send" is the narrower option.
 
 **Receiving through Resend** (`server/resend-in.js`), when `RESEND_RECEIVE_KEY` is set:
 - The MX of `MAIL_DOMAIN` points at Resend. The app polls Resend's Receiving API (no

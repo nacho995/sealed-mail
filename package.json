@@ -11,7 +11,8 @@
     "start": "node server/index.js",
     "dev": "node --watch server/index.js",
     "mail:test": "node scripts/send-test-mail.mjs",
-    "setup:sendgrid": "node scripts/setup-sendgrid.mjs",
+    "setup:gmail": "node scripts/setup-smtp.mjs gmail",
+    "setup:sendgrid": "node scripts/setup-smtp.mjs sendgrid",
     "test": "node tests/e2e.mjs"
   },
   "dependencies": {
