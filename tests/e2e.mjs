@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { SMTPServer } from 'smtp-server';
 import { simpleParser } from 'mailparser';
 import nodemailer from 'nodemailer';
@@ -294,6 +294,28 @@ const asSentWithWrapSalt = await seal.authKeyHex(erinPw, erinLogin.r.data.saltWr
 const asAesKey = await webcrypto.subtle.importKey('raw', Buffer.from(asSentWithWrapSalt, 'hex'), 'AES-GCM', false, ['decrypt']);
 await assert.rejects(seal.decryptPkcs8(erinLogin.r.data.encPrivKey, erinLogin.r.data.privIv, asAesKey));
 ok('the login key derived with the wrapping salt cannot open the private key');
+
+// SSRF guard for the Resend raw-download URL (server/net-guard.js). A tampered API
+// response must not be able to make the server fetch an internal address.
+{
+  const { assertPublicHttpsUrl } = await import(pathToFileURL(path.join(root, 'server/net-guard.js')).href);
+  const mustReject = [
+    'http://host.example/raw',                       // not https
+    'https://host.example:8080/raw',                 // non-default port
+    'https://user:pass@host.example/raw',            // embedded credentials
+    'https://169.254.169.254/latest/meta-data/',     // cloud metadata (IMDS)
+    'https://127.0.0.1/raw',
+    'https://[::1]/raw',
+    'https://10.0.0.5/raw',
+    'https://192.168.1.1/raw',
+    'https://[::ffff:169.254.169.254]/raw',          // IPv4-mapped metadata
+    'definitely not a url',
+  ];
+  for (const u of mustReject) await assert.rejects(assertPublicHttpsUrl(u), /insecure fetch URL/, `should reject ${u}`);
+  await assert.doesNotReject(assertPublicHttpsUrl('https://1.1.1.1/raw'));        // public literal, no DNS
+  await assert.rejects(assertPublicHttpsUrl('https://host.example/raw', { allowlist: ['resend.com'] }), /not in allowlist/);
+  ok('SSRF guard refuses non-https, private/loopback/link-local, metadata (incl. v4-mapped), creds, odd ports and off-allowlist hosts');
+}
 
 // ---------- attachments ----------
 // Two files: random bytes with a marker inside, and a small text file.

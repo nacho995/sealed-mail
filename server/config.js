@@ -86,6 +86,11 @@ module.exports = {
       receiveKey: process.env.RESEND_RECEIVE_KEY || '',
       apiBase: (process.env.RESEND_API_BASE || 'https://api.resend.com').replace(/\/+$/, ''),
       pollMs: Math.max(Number(process.env.RESEND_POLL_MS) || 15_000, 250),
+      // Optional: pin the raw-download host(s). Empty means "any public https host"
+      // (private/loopback/link-local addresses are refused either way). Set it to
+      // Resend's download host(s), comma-separated, to lock it down tighter.
+      rawHosts: (process.env.RESEND_RAW_DOWNLOAD_HOSTS || '')
+        .split(',').map((x) => x.trim().toLowerCase()).filter(Boolean),
     },
   },
   limits: {

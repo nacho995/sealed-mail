@@ -298,6 +298,14 @@ in the clear on either side.
   id is recorded so it is sealed exactly once.
 - The SPF/DKIM/DMARC verdicts Resend reports are sealed with the message. The UI marks
   an outside sender "verified" only when DMARC passed.
+- The raw-download link in Resend's response is fetched through an **SSRF guard**
+  (`server/net-guard.js`): it must be `https` on the default port, with no embedded
+  credentials, and its host must not be — or resolve to — a loopback, link-local,
+  private or metadata (`169.254.169.254`, including its IPv4-mapped IPv6 form) address;
+  the fetch uses `redirect: 'error'` so an allowed host cannot 30x-redirect inside the
+  network. Set `RESEND_RAW_DOWNLOAD_HOSTS` to pin the exact host(s). This bounds the
+  damage if a Resend API response were tampered with. (Added after an external pentest;
+  the e2e suite checks it.)
 - **Accepted risks** (chosen by the operator):
   - Reading received mail requires a Resend key with **full access**. Resend has no
     read-only scope. That key can manage everything in the Resend account, including
