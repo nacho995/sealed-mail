@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { SMTPServer } from 'smtp-server';
 import { simpleParser } from 'mailparser';
 import nodemailer from 'nodemailer';
@@ -40,12 +40,15 @@ const smtpInPort = await freePort();
 // "The outside world": an SMTP server standing in for Gmail's, catching whatever the
 // app sends to external addresses.
 const outsideMail = [];
+// A test can set this to hold the relay ack, so an outbound send is provably still
+// awaiting the relay while another request runs (used by the quota-TOCTOU test).
+let outsideDelayMs = 0;
 const outside = new SMTPServer({
   authOptional: true,
   disabledCommands: ['AUTH', 'STARTTLS'],
   logger: false,
   onData(stream, session, cb) {
-    simpleParser(stream).then((mail) => { outsideMail.push(mail); cb(); }, cb);
+    simpleParser(stream).then((mail) => { outsideMail.push(mail); setTimeout(cb, outsideDelayMs); }, cb);
   },
 });
 const outsidePort = await freePort();
@@ -153,7 +156,7 @@ function makeClient() {
 let passed = 0;
 function ok(msg) { passed++; console.log('[OK] ' + msg); }
 
-async function register(client, email, password) {
+async function registerRaw(client, email, password) {
   const id = await seal.generateIdentity();
   const pubKey = await seal.exportPublicKey(id.publicKey);
   const pkcs8 = await seal.exportPkcs8(id.privateKey);
@@ -164,6 +167,10 @@ async function register(client, email, password) {
     email, pubKey, saltAuth: pw.saltAuth, saltWrap: pw.saltWrap, authKey: pw.authKey,
     encPrivKey: pw.encPrivKey, privIv: pw.privIv, recovery,
   });
+  return { r, pkcs8, pubKey, code };
+}
+async function register(client, email, password) {
+  const { r, pkcs8, pubKey, code } = await registerRaw(client, email, password);
   assert.equal(r.status, 200, 'register -> ' + JSON.stringify(r.data));
   return { privKey: await seal.importPrivateKey(pkcs8), pubKeyB64: pubKey, email: email.toLowerCase(), code };
 }
@@ -245,6 +252,105 @@ assert.equal((await readBox(A, alice.privKey, 'sent'))[0].body, secret);
 ok("sender decrypted their own Sent copy");
 assert.ok(!ciphertext.includes(secret) && !Buffer.from(ciphertext, 'base64').toString('latin1').includes('servidor'));
 ok('stored ciphertext does not contain the plaintext');
+
+// ---------- issues reported from outside ----------
+// A message body is sealed by whoever sent it, so its JSON can have any shape. The
+// reader keeps only the fields it uses, with the types it expects: a body such as
+// {"from":{"toString":1}} used to throw while the folder was drawn and stop the rest
+// of the mailbox from rendering.
+const erinPw = 'erin-correct-horse-battery-staple';
+// One account mailing itself keeps the sign-up rate limit (10 per IP) in budget.
+const Cc = makeClient();
+const erin = await register(Cc, `erin.d-${stamp}@sealed.local`, erinPw);
+async function sendRaw(content) {
+  const erinKey = await seal.importPublicKey(erin.pubKeyB64);
+  const { messageKey, ciphertext: ct, iv } = await seal.encryptBody(content);
+  const encKey = await seal.wrapMessageKey(messageKey, erinKey);
+  const r = await Cc.req('POST', '/api/messages', { ciphertext: ct, iv, selfEncKey: encKey, recipients: [{ email: erin.email, encKey }] });
+  assert.equal(r.status, 200);
+}
+await sendRaw({ from: { toString: 1 }, to: 'x', subject: 7, body: ['b'], auth: 'pass', attachments: [{ name: {}, size: '1' }, 5] });
+const [crafted] = await readBox(Cc, erin.privKey, 'inbox');
+assert.doesNotThrow(() => `${crafted.from}${crafted.to}${crafted.subject}${crafted.body}`);
+assert.equal(crafted.from, undefined);
+assert.equal(crafted.to, undefined);
+assert.equal(crafted.auth, undefined);
+assert.equal(typeof crafted.attachments[0].name, 'undefined');
+assert.equal(crafted.attachments.length, 2);
+await sendRaw(null);
+await assert.rejects(readBox(Cc, erin.privKey, 'inbox'), /malformed message body/);
+ok('a decrypted body keeps only well-typed fields; one that is not an object is refused');
+
+// A repeated recipient address must not fan one send into several inbox copies.
+{
+  const dupKey = await seal.wrapMessageKey((await seal.encryptBody({ from: erin.email, to: [erin.email], subject: 'd', body: 'd' })).messageKey, await seal.importPublicKey(erin.pubKeyB64));
+  const mk = await seal.encryptBody({ from: erin.email, to: [erin.email], subject: 'dup', body: 'dup' });
+  const ek = await seal.wrapMessageKey(mk.messageKey, await seal.importPublicKey(erin.pubKeyB64));
+  const r = await Cc.req('POST', '/api/messages', { ciphertext: mk.ciphertext, iv: mk.iv, selfEncKey: ek, recipients: Array.from({ length: 10 }, () => ({ email: erin.email, encKey: ek })) });
+  assert.equal(r.status, 200);
+  const inbox = (await Cc.req('GET', '/api/messages?box=inbox')).data.messages.filter((m) => m.id === r.data.id);
+  assert.equal(inbox.length, 1, `a 10x-repeated recipient produced ${inbox.length} inbox copies`);
+  void dupKey;
+}
+ok('a repeated recipient address is delivered to exactly once (no inbox amplification)');
+
+// A directional-override character in a field must not survive to render in a misleading
+// order (Trojan Source): "factura<U+202E>gnp.exe" would otherwise show as "facturaexe.png".
+// cleanBody strips bidi controls from every decrypted field, as the app does for file names.
+{
+  const mk = await seal.encryptBody({ from: 'a\u202eb@sealed.local', to: ['c\u200ed@sealed.local'], subject: 'factura\u202egnp.exe', body: 'uno\u202edos\ntres' });
+  const got = await seal.decryptBody(mk.messageKey, mk.ciphertext, mk.iv);
+  assert.equal(got.subject, 'facturagnp.exe');
+  assert.equal(got.body, 'unodos\ntres', 'newlines kept, bidi stripped from body');
+  assert.ok(!/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/.test(got.subject + got.body + got.from + got.to.join('')),
+    'bidi controls stripped from every decrypted field');
+}
+ok('directional-override characters are stripped from decrypted fields (no Trojan-Source spoof)');
+
+{
+  const r = await fetch(BASE + '/api/config');
+  assert.equal(r.headers.get('cache-control'), 'no-store', 'API responses must be Cache-Control: no-store');
+}
+ok('API responses are marked Cache-Control: no-store');
+
+// Look-alike addresses: the part before @ is plain ASCII, so an invisible or
+// Cyrillic character cannot register a second "alice" that reads the same.
+for (const local of [`ali\u200bce${stamp}`, `\u0430lice${stamp}`]) {
+  const { r } = await registerRaw(makeClient(), `${local}@sealed.local`, 'whatever-password-123');
+  assert.equal(r.status, 400, `${JSON.stringify(local)} must be refused`);
+}
+ok('addresses with invisible or look-alike (non-ASCII) characters are refused at sign-up');
+
+// A malicious server can answer /api/salt with the account's saltWrap. What the
+// browser then sends as authKey must still not open the private key.
+const erinLogin = await loginRaw(makeClient(), erin.email, erinPw);
+assert.equal(erinLogin.r.status, 200);
+const asSentWithWrapSalt = await seal.authKeyHex(erinPw, erinLogin.r.data.saltWrap);
+const asAesKey = await webcrypto.subtle.importKey('raw', Buffer.from(asSentWithWrapSalt, 'hex'), 'AES-GCM', false, ['decrypt']);
+await assert.rejects(seal.decryptPkcs8(erinLogin.r.data.encPrivKey, erinLogin.r.data.privIv, asAesKey));
+ok('the login key derived with the wrapping salt cannot open the private key');
+
+// SSRF guard for the Resend raw-download URL (server/net-guard.js). A tampered API
+// response must not be able to make the server fetch an internal address.
+{
+  const { assertPublicHttpsUrl } = await import(pathToFileURL(path.join(root, 'server/net-guard.js')).href);
+  const mustReject = [
+    'http://host.example/raw',                       // not https
+    'https://host.example:8080/raw',                 // non-default port
+    'https://user:pass@host.example/raw',            // embedded credentials
+    'https://169.254.169.254/latest/meta-data/',     // cloud metadata (IMDS)
+    'https://127.0.0.1/raw',
+    'https://[::1]/raw',
+    'https://10.0.0.5/raw',
+    'https://192.168.1.1/raw',
+    'https://[::ffff:169.254.169.254]/raw',          // IPv4-mapped metadata
+    'definitely not a url',
+  ];
+  for (const u of mustReject) await assert.rejects(assertPublicHttpsUrl(u), /insecure fetch URL/, `should reject ${u}`);
+  await assert.doesNotReject(assertPublicHttpsUrl('https://1.1.1.1/raw'));        // public literal, no DNS
+  await assert.rejects(assertPublicHttpsUrl('https://host.example/raw', { allowlist: ['resend.com'] }), /not in allowlist/);
+  ok('SSRF guard refuses non-https, private/loopback/link-local, metadata (incl. v4-mapped), creds, odd ports and off-allowlist hosts');
+}
 
 // ---------- attachments ----------
 // Two files: random bytes with a marker inside, and a small text file.
@@ -616,6 +722,70 @@ const overQuota3 = await sendWithFiles(A2, alice.email, alice.pubKeyB64, bobEmai
   [{ name: 'd.bin', type: 'application/octet-stream', bytes: randomBytes(9 * 1024 * 1024) }]);
 assert.deepEqual([overQuota.status, overQuota2.status, overQuota3.status], [200, 200, 413], 'the third 9 MB send passes 30 MB');
 ok('the per-account attachment quota counts what the account itself sent');
+
+// Quota TOCTOU: an attachment send must not slip through while another send for the same
+// account is between its quota check and its commit. The external path awaits the relay in
+// that window; hold the relay so the window is open, then fire an internal send-with-files.
+outsideDelayMs = 500;
+{
+  const held = randomBytes(256 * 1024);
+  const heldSealed = await seal.encryptBody({ from: alice.email, to: ['amiga@gmail.com'], subject: 'EnVuelo', body: 'b',
+    attachments: [await seal.describeFile('h.bin', 'application/octet-stream', held)] });
+  const extInFlight = A2.req('POST', '/api/messages/external', {
+    to: 'amiga@gmail.com', subject: 'EnVuelo', body: 'b',
+    files: [{ name: 'h.bin', type: 'application/octet-stream', data: held.toString('base64') }],
+    selfCopy: { ciphertext: heldSealed.ciphertext, iv: heldSealed.iv, encKey: await seal.wrapMessageKey(heldSealed.messageKey, alicePubKey),
+      attachments: [await seal.encryptAttachment(heldSealed.messageKey, held, 0)] },
+  });
+  await new Promise((r) => setTimeout(r, 80)); // the external send is now awaiting the held relay
+  const concurrent = await sendWithFiles(A2, alice.email, alice.pubKeyB64, bobEmail, 'Simultaneo',
+    [{ name: 's.bin', type: 'application/octet-stream', bytes: randomBytes(1024) }]);
+  assert.equal(concurrent.status, 429, `internal send with files during an in-flight external send must be 429, got ${concurrent.status}`);
+  assert.equal((await extInFlight).status, 200, 'the external send itself should still succeed');
+}
+outsideDelayMs = 0;
+ok('an attachment send is refused while another is between quota-check and commit (no quota TOCTOU)');
+
+// F4: a CSRF header with the same character length but a different byte length (a
+// multibyte char) used to make timingSafeEqual throw -> 500. It must be a clean 403.
+{
+  const badCsrf = 'n'.repeat(A2.jar.csrf.length - 1) + '\u00f1'; // same char length, one extra byte
+  const r = await fetch(`${BASE}/api/messages/1/read`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: `sid=${A2.jar.sid}; csrf=${A2.jar.csrf}`, 'x-csrf-token': badCsrf },
+    body: '{}',
+  });
+  assert.equal(r.status, 403, `a malformed multibyte CSRF token must be 403, got ${r.status}`);
+}
+ok('a malformed multibyte CSRF token is rejected cleanly (403, not 500)');
+
+// F5: wrapMessageKey binds the wrap to a purpose via an RSA-OAEP label. Decrypting our
+// OWN wrap without that label must fail; without the binding it would succeed. This is
+// what proves the label is actually in effect (a mere label mismatch fails either way).
+{
+  const mk = await webcrypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
+  const wrapped = await seal.wrapMessageKey(mk, await seal.importPublicKey(alice.pubKeyB64));
+  await assert.rejects(
+    webcrypto.subtle.decrypt({ name: 'RSA-OAEP' }, alice.privKey, Buffer.from(wrapped, 'base64')),
+    'a purpose-bound message-key wrap must not decrypt without its label');
+  assert.ok(await seal.unwrapMessageKey(wrapped, alice.privKey), 'our own unwrap (with the label) still works');
+}
+ok('key wraps are purpose-bound (our wrap does not decrypt without its label)');
+
+// F2: per-account login throttle that never locks out the owner. Repeated WRONG
+// attempts for an account start returning 429, but the CORRECT password still logs in
+// (it is verified before any throttling), so an attacker cannot lock the owner out.
+{
+  let seen429 = 0;
+  for (let i = 0; i < 10; i++) {
+    const r = (await loginRaw(makeClient(), aliceEmail, `wrong-password-${i}`)).r;
+    if (r.status === 429) seen429 += 1;
+  }
+  assert.ok(seen429 > 0, `repeated wrong logins for one account must start returning 429, saw ${seen429}`);
+  const owner = await loginRaw(makeClient(), aliceEmail, alicePw);
+  assert.equal(owner.r.status, 200, `the correct password must still log in after the failures (no owner lockout), got ${owner.r.status}`);
+}
+ok('login throttles repeated wrong attempts per account (429) yet the correct password is never locked out');
 
 assert.equal((await A2.req('POST', '/api/messages/external', { to: bobEmail, subject: 's', body: 'b', selfCopy })).status, 400);
 assert.equal((await A2.req('POST', '/api/messages/external', { to: 'a@gmail.com', subject: 'x\r\nBcc: v@evil.com', body: 'b', selfCopy })).status, 400);

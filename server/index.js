@@ -19,7 +19,7 @@ const app = express();
 app.disable('x-powered-by');
 // Only trust X-Forwarded-* in production (where a reverse proxy sets them). Trusting
 // them when directly exposed would let a client spoof its IP and defeat rate limits.
-app.set('trust proxy', config.isProd ? 1 : false);
+app.set('trust proxy', config.isProd ? config.trustProxyHops : false);
 
 // Strict Content-Security-Policy: everything is same-origin and there is NO inline
 // script or style anywhere in the frontend, so 'unsafe-inline' is not needed. This
@@ -51,6 +51,11 @@ const jsonWithFiles = express.json({ limit: attachments.MAX_REQUEST });
 const jsonWithFilesExternal = express.json({ limit: attachments.MAX_REQUEST_EXTERNAL });
 app.use((req, res, next) => (req.method === 'POST' && FILE_ROUTES.has(req.path) ? next() : smallJson(req, res, next)));
 app.use(cookieParser());
+
+// No cache for any API response: they carry per-account data (ciphertext, wrapped
+// keys, the account email) that must never be held by the browser's back/forward
+// cache or a shared intermediary. Static assets set their own Cache-Control below.
+app.use('/api', (req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
 
 // ---- rate limiting ----
 // Key by client network: IPv4 as-is, IPv6 grouped by /64. One subscriber normally

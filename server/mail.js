@@ -34,19 +34,29 @@ function send(req, res) {
   }
   const files = attachments.parseSealed((req.body || {}).attachments);
   if (!files) return res.status(400).json({ error: 'invalid attachments' });
+  // Honour the per-account send-with-files lock: an external send awaiting the relay has
+  // passed its quota check but not yet committed, so storing here now would overshoot.
+  if (files.length && attachments.sendInProgress(req.user.id)) {
+    return res.status(429).json({ error: 'another send with attachments is in progress' });
+  }
   if (attachments.overQuota(req.user.id, files)) return res.status(413).json({ error: 'attachment quota exceeded' });
   if (!Array.isArray(recipients) || recipients.length < 1 || recipients.length > L.recipients) {
     return res.status(400).json({ error: 'invalid recipient list' });
   }
   // Resolve every recipient up front; reject the whole message if any is unknown
-  // or malformed, so a message is never half-delivered.
+  // or malformed, so a message is never half-delivered. Each distinct account is
+  // delivered to once: repeating an address cannot fan a single send into many copies
+  // in someone's inbox.
   const resolved = [];
+  const seen = new Set();
   for (const r of recipients) {
     if (!r || !isEmail(r.email) || !isB64(r.encKey, L.encKeyB64)) {
       return res.status(400).json({ error: 'invalid recipient entry' });
     }
     const u = getUserByEmail.get(r.email.toLowerCase());
     if (!u) return res.status(404).json({ error: `unknown recipient: ${r.email}` });
+    if (seen.has(u.id)) continue;
+    seen.add(u.id);
     resolved.push({ user: u, encKey: r.encKey });
   }
   const tx = db.transaction(() => {

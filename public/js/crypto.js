@@ -13,6 +13,13 @@ const PBKDF2_ITERS = 310000; // OWASP-range for PBKDF2-HMAC-SHA256 (2023+)
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
+// Purpose labels bound into the two key wraps as AEAD additional data (AES-GCM) and
+// RSA-OAEP label. They tie each ciphertext to its role, so a blob lifted from one slot
+// cannot be fed into another: it fails as a clean authenticated-decryption error rather
+// than surfacing later as a bad key import. Must match server/sealing.js byte for byte.
+const PRIVKEY_AAD = enc.encode('sealed-mail private-key v1');
+const MSGKEY_LABEL = enc.encode('sealed-mail message-key v1');
+
 // ---- encoding helpers ----
 function bufToB64(buf) {
   const bytes = new Uint8Array(buf);
@@ -49,8 +56,14 @@ async function deriveBits(password, saltHex, bits) {
   );
 }
 // authKey: sent to the server as the login secret (server stores only scrypt(authKey)).
+// The PBKDF2 output goes through HKDF before it leaves the browser, so what is sent is
+// never a raw PBKDF2(password, salt). Without that step a malicious server could answer
+// /api/salt with the account's saltWrap and be handed wrapKey itself.
 async function authKeyHex(password, saltAuthHex) {
-  return bufToHex(await deriveBits(password, saltAuthHex, 256));
+  const base = await subtle.importKey('raw', await deriveBits(password, saltAuthHex, 256), 'HKDF', false, ['deriveBits']);
+  return bufToHex(await subtle.deriveBits(
+    { name: 'HKDF', hash: 'SHA-256', salt: enc.encode('sealed-mail'), info: enc.encode('login verifier v2') },
+    base, 256));
 }
 // wrapKey: never leaves the browser; encrypts/decrypts the private key.
 async function wrapKey(password, saltWrapHex) {
@@ -84,11 +97,11 @@ async function importPrivateKey(pkcs8) {
 }
 async function encryptPkcs8(pkcs8, aesWrapKey) {
   const iv = window.crypto.getRandomValues(new Uint8Array(12));
-  const ct = await subtle.encrypt({ name: 'AES-GCM', iv }, aesWrapKey, pkcs8);
+  const ct = await subtle.encrypt({ name: 'AES-GCM', iv, additionalData: PRIVKEY_AAD }, aesWrapKey, pkcs8);
   return { encPrivKey: bufToB64(ct), privIv: bufToB64(iv) };
 }
 async function decryptPkcs8(encB64, ivB64, aesWrapKey) {
-  return subtle.decrypt({ name: 'AES-GCM', iv: new Uint8Array(b64ToBuf(ivB64)) }, aesWrapKey, b64ToBuf(encB64));
+  return subtle.decrypt({ name: 'AES-GCM', iv: new Uint8Array(b64ToBuf(ivB64)), additionalData: PRIVKEY_AAD }, aesWrapKey, b64ToBuf(encB64));
 }
 async function decryptPrivateKey(encB64, ivB64, aesWrapKey) {
   return importPrivateKey(await decryptPkcs8(encB64, ivB64, aesWrapKey));
@@ -137,18 +150,48 @@ async function encryptBody(obj) {
   const ct = await subtle.encrypt({ name: 'AES-GCM', iv }, messageKey, enc.encode(JSON.stringify(obj)));
   return { messageKey, ciphertext: bufToB64(ct), iv: bufToB64(iv) };
 }
+// A body is written by whoever sealed it (another user, or our SMTP gateway), so its
+// JSON can have any shape. Only the fields the app reads are kept, each with the type
+// it expects (anything else becomes undefined): a crafted body like
+// {"from":{"toString":1}} must not be able to throw while the folder is drawn.
+// Directional formatting characters (bidi overrides/isolates, LRM/RLM) let a sender
+// make text render in a misleading order: "factura‮gnp.exe" shows as
+// "facturaexe.png". Strip them from every displayed field, as the app already does for
+// file names. Newlines and ordinary RTL letters are kept, so legitimate Arabic/Hebrew
+// is unaffected; CSS `unicode-bidi` cannot neutralise an embedded override, only strip.
+const BIDI_CONTROLS = /[‎‏‪-‮⁦-⁩]/g;
+const str = (v) => (typeof v === 'string' ? v.replace(BIDI_CONTROLS, '') : undefined);
+function cleanBody(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('malformed message body');
+  const body = {
+    from: str(raw.from),
+    to: Array.isArray(raw.to) ? raw.to.map(str).filter((t) => typeof t === 'string') : undefined,
+    subject: str(raw.subject),
+    body: str(raw.body),
+  };
+  if (raw.auth && typeof raw.auth === 'object') {
+    body.auth = { spf: str(raw.auth.spf), dkim: str(raw.auth.dkim), dmarc: str(raw.auth.dmarc) };
+  }
+  // Entries keep their position (it is the file's index), even when malformed.
+  if (Array.isArray(raw.attachments)) {
+    body.attachments = raw.attachments.map((a) => (a && typeof a === 'object'
+      ? { name: str(a.name), type: str(a.type), size: Number.isInteger(a.size) ? a.size : undefined, sha256: str(a.sha256) }
+      : null));
+  }
+  return body;
+}
 async function decryptBody(messageKey, ctB64, ivB64) {
   const pt = await subtle.decrypt(
     { name: 'AES-GCM', iv: new Uint8Array(b64ToBuf(ivB64)) }, messageKey, b64ToBuf(ctB64));
-  return JSON.parse(dec.decode(pt));
+  return cleanBody(JSON.parse(dec.decode(pt)));
 }
 // Wrap the AES message key for one recipient's RSA public key.
 async function wrapMessageKey(messageKey, recipientPub) {
   const raw = await subtle.exportKey('raw', messageKey);
-  return bufToB64(await subtle.encrypt({ name: 'RSA-OAEP' }, recipientPub, raw));
+  return bufToB64(await subtle.encrypt({ name: 'RSA-OAEP', label: MSGKEY_LABEL }, recipientPub, raw));
 }
 async function unwrapMessageKey(encKeyB64, myPriv) {
-  const raw = await subtle.decrypt({ name: 'RSA-OAEP' }, myPriv, b64ToBuf(encKeyB64));
+  const raw = await subtle.decrypt({ name: 'RSA-OAEP', label: MSGKEY_LABEL }, myPriv, b64ToBuf(encKeyB64));
   return subtle.importKey('raw', raw, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
 }
 

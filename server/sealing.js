@@ -14,6 +14,9 @@ const { subtle } = webcrypto;
 // under the message key with its position as AES-GCM additional data, and its name,
 // type, size and SHA-256 go into the encrypted body (content.attachments).
 const attachmentAad = (i) => Buffer.from(`sealed-mail attachment ${i}`, 'utf8');
+// RSA-OAEP label binding the wrapped message key to its purpose. MUST match the
+// MSGKEY_LABEL in public/js/crypto.js byte for byte, or the recipient cannot unwrap.
+const MSGKEY_LABEL = Buffer.from('sealed-mail message-key v1', 'utf8');
 
 async function sealForRecipients(content, recipientPubKeysB64, files = []) {
   const key = await subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt']);
@@ -37,7 +40,7 @@ async function sealForRecipients(content, recipientPubKeysB64, files = []) {
     for (const spkiB64 of recipientPubKeysB64) {
       const pub = await subtle.importKey('spki', Buffer.from(spkiB64, 'base64'),
         { name: 'RSA-OAEP', hash: 'SHA-256' }, false, ['encrypt']);
-      encKeys.push(Buffer.from(await subtle.encrypt({ name: 'RSA-OAEP' }, pub, raw)).toString('base64'));
+      encKeys.push(Buffer.from(await subtle.encrypt({ name: 'RSA-OAEP', label: MSGKEY_LABEL }, pub, raw)).toString('base64'));
     }
     return { ciphertext: Buffer.from(ct).toString('base64'), iv: Buffer.from(iv).toString('base64'), encKeys, attachments: sealedFiles };
   } finally {

@@ -1,6 +1,7 @@
 const db = require('./db');
 const config = require('./config');
 const { deliverRaw, cleanAddress } = require('./smtp-in');
+const { assertPublicHttpsUrl } = require('./net-guard');
 
 // Inbound mail through Resend. The MX of MAIL_DOMAIN points at Resend; this module
 // polls Resend's Receiving API, downloads each new message in its original form and
@@ -9,7 +10,7 @@ const { deliverRaw, cleanAddress } = require('./smtp-in');
 // URL. Resend itself keeps its copy (there is no delete API): see docs/SECURITY.md.
 
 const { domain, inbound } = config.mail;
-const { receiveKey, apiBase, pollMs } = config.mail.resend;
+const { receiveKey, apiBase, pollMs, rawHosts } = config.mail.resend;
 
 const isSeen = db.prepare('SELECT 1 FROM inbound_seen WHERE provider_id = ?');
 const markSeen = db.prepare('INSERT OR IGNORE INTO inbound_seen (provider_id, seen_at) VALUES (?, ?)');
@@ -31,10 +32,15 @@ async function api(path) {
 
 // The original message (RFC 822). The URL is a short-lived signed link from Resend.
 async function download(url) {
-  if (typeof url !== 'string' || !(url.startsWith('https://') || isLocalHttp(url))) {
-    throw new Error('missing or insecure raw download URL');
+  if (typeof url !== 'string' || !url) throw new Error('missing or insecure raw download URL');
+  // Local http is only for the test double (never in production). Any other URL must be
+  // a public https address, so a tampered API response cannot point us at the internal
+  // network or the cloud metadata endpoint. redirect:'error' stops an allowed host from
+  // 30x-redirecting there after the check.
+  if (!(isLocalHttp(url) && !config.isProd)) {
+    await assertPublicHttpsUrl(url, { allowlist: rawHosts });
   }
-  const res = await fetch(url, { signal: AbortSignal.timeout(20_000) });
+  const res = await fetch(url, { signal: AbortSignal.timeout(20_000), redirect: 'error' });
   if (!res.ok) throw new Error(`raw download ${res.status}`);
   const declared = Number(res.headers.get('content-length') || 0);
   if (declared > inbound.maxBytes) throw Object.assign(new Error('message too large'), { permanent: true });

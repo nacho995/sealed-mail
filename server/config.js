@@ -36,6 +36,12 @@ if (!sessionSecret || sessionSecret === PLACEHOLDER_SECRET || !/^[0-9a-f]{32,}$/
 
 const port = Number(process.env.PORT) || 3000;
 
+// How many reverse-proxy hops sit in front of the app in production, so Express trusts
+// exactly that many X-Forwarded-For entries. Getting this wrong lets a client spoof its
+// IP and defeat the per-IP rate limits (too high) or breaks limiting (too low). Set
+// TRUST_PROXY_HOPS to the real hop count of your deployment; default 1.
+const trustProxyHops = Math.max(Number(process.env.TRUST_PROXY_HOPS) || 1, 1);
+
 // In production the passkey domain must be stated explicitly and served over HTTPS;
 // silently falling back to localhost would make every passkey fail (or bind to the
 // wrong origin).
@@ -47,6 +53,7 @@ module.exports = {
   isProd,
   sessionSecret,
   port,
+  trustProxyHops,
   // WebAuthn relying-party identity. A passkey is bound to this domain, so these
   // MUST match the public hostname/origin in production (e.g. mail.example.com).
   webauthn: {
@@ -86,6 +93,11 @@ module.exports = {
       receiveKey: process.env.RESEND_RECEIVE_KEY || '',
       apiBase: (process.env.RESEND_API_BASE || 'https://api.resend.com').replace(/\/+$/, ''),
       pollMs: Math.max(Number(process.env.RESEND_POLL_MS) || 15_000, 250),
+      // Optional: pin the raw-download host(s). Empty means "any public https host"
+      // (private/loopback/link-local addresses are refused either way). Set it to
+      // Resend's download host(s), comma-separated, to lock it down tighter.
+      rawHosts: (process.env.RESEND_RAW_DOWNLOAD_HOSTS || '')
+        .split(',').map((x) => x.trim().toLowerCase()).filter(Boolean),
     },
   },
   limits: {
