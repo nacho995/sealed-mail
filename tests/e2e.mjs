@@ -772,6 +772,21 @@ ok('a malformed multibyte CSRF token is rejected cleanly (403, not 500)');
 }
 ok('key wraps are purpose-bound (our wrap does not decrypt without its label)');
 
+// F2: per-account login throttle that never locks out the owner. Repeated WRONG
+// attempts for an account start returning 429, but the CORRECT password still logs in
+// (it is verified before any throttling), so an attacker cannot lock the owner out.
+{
+  let seen429 = 0;
+  for (let i = 0; i < 10; i++) {
+    const r = (await loginRaw(makeClient(), aliceEmail, `wrong-password-${i}`)).r;
+    if (r.status === 429) seen429 += 1;
+  }
+  assert.ok(seen429 > 0, `repeated wrong logins for one account must start returning 429, saw ${seen429}`);
+  const owner = await loginRaw(makeClient(), aliceEmail, alicePw);
+  assert.equal(owner.r.status, 200, `the correct password must still log in after the failures (no owner lockout), got ${owner.r.status}`);
+}
+ok('login throttles repeated wrong attempts per account (429) yet the correct password is never locked out');
+
 assert.equal((await A2.req('POST', '/api/messages/external', { to: bobEmail, subject: 's', body: 'b', selfCopy })).status, 400);
 assert.equal((await A2.req('POST', '/api/messages/external', { to: 'a@gmail.com', subject: 'x\r\nBcc: v@evil.com', body: 'b', selfCopy })).status, 400);
 assert.equal((await A2.req('POST', '/api/messages/external', { to: 'a@gmail.com', subject: 's', body: 'b', selfCopy }, { csrf: false })).status, 403);

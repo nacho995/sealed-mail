@@ -235,21 +235,48 @@ function saltLookup(req, res) {
   res.json({ saltAuth: user ? user.salt_auth : fakeSalt('salt-auth', email) });
 }
 
+// Per-account login throttle that NEVER locks out the real owner. The password is
+// always verified first, so a correct one logs in and clears the account's counter no
+// matter how many failures preceded it — an attacker cannot lock someone out by
+// spamming wrong guesses. Only repeated WRONG attempts for an account, once over the
+// threshold in the window, get a 429 instead of a 401. Keyed by email whether or not
+// the account exists, so the 429 is not an account-existence oracle. In memory: the
+// per-guess scrypt cost (and its global concurrency cap) is the real brute-force
+// barrier; this only adds a per-account speed bump and signal without a lockout vector.
+const LOGIN_FAIL_MAX = 10;
+const LOGIN_FAIL_WINDOW_MS = 15 * 60 * 1000;
+const loginFails = new Map(); // email -> { count, resetAt }
+function noteLoginFail(email) {
+  const now = Date.now();
+  const e = loginFails.get(email);
+  if (!e || e.resetAt <= now) { loginFails.set(email, { count: 1, resetAt: now + LOGIN_FAIL_WINDOW_MS }); return 1; }
+  e.count += 1;
+  return e.count;
+}
+// Drop expired counters so the map cannot grow without bound across many attacked emails.
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of loginFails) if (v.resetAt <= now) loginFails.delete(k);
+}, LOGIN_FAIL_WINDOW_MS).unref();
+
 async function login(req, res) {
   try {
     const { email, authKey } = req.body || {};
     if (!validEmail(email) || !validHex(authKey, 512)) {
       return res.status(401).json({ error: 'invalid credentials' });
     }
-    const user = getUserByEmail.get(email.toLowerCase());
-    if (!user) {
-      // Burn comparable time to a real verify so timing does not reveal existence.
-      await burnScrypt(authKey);
-      return res.status(401).json({ error: 'invalid credentials' });
+    const normEmail = email.toLowerCase();
+    const user = getUserByEmail.get(normEmail);
+    // Verify first so a correct password always wins; burn comparable time for an
+    // unknown account so timing does not reveal existence.
+    let valid = false;
+    if (user) valid = await verifyAuthHash(authKey, user.auth_salt_srv, user.auth_hash);
+    else await burnScrypt(authKey);
+    if (!valid) {
+      const fails = noteLoginFail(normEmail);
+      return res.status(fails >= LOGIN_FAIL_MAX ? 429 : 401).json({ error: 'invalid credentials' });
     }
-    if (!(await verifyAuthHash(authKey, user.auth_salt_srv, user.auth_hash))) {
-      return res.status(401).json({ error: 'invalid credentials' });
-    }
+    loginFails.delete(normEmail); // a correct password clears the account's counter
     createSession(req, res, user.id);
     // The encrypted private key is handed back ONLY after a successful login.
     res.json({
