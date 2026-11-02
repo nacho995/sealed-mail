@@ -39,14 +39,19 @@ function send(req, res) {
     return res.status(400).json({ error: 'invalid recipient list' });
   }
   // Resolve every recipient up front; reject the whole message if any is unknown
-  // or malformed, so a message is never half-delivered.
+  // or malformed, so a message is never half-delivered. Each distinct account is
+  // delivered to once: repeating an address cannot fan a single send into many copies
+  // in someone's inbox.
   const resolved = [];
+  const seen = new Set();
   for (const r of recipients) {
     if (!r || !isEmail(r.email) || !isB64(r.encKey, L.encKeyB64)) {
       return res.status(400).json({ error: 'invalid recipient entry' });
     }
     const u = getUserByEmail.get(r.email.toLowerCase());
     if (!u) return res.status(404).json({ error: `unknown recipient: ${r.email}` });
+    if (seen.has(u.id)) continue;
+    seen.add(u.id);
     resolved.push({ user: u, encKey: r.encKey });
   }
   const tx = db.transaction(() => {

@@ -233,7 +233,7 @@ reaches the database, and open-relay refusal), recovery (including two simultane
 recoveries racing for the same code), password re-checks, passkey defences, session
 revocation, encrypted attachments (round trip, a stranger gets 404, a swapped or
 substituted file is rejected, limits and quotas, files in and out by SMTP) and error
-handling: 49 checks. CI runs it on Node 22 and 24.
+handling: 50 checks. CI runs it on Node 22 and 24.
 
 ## Out of scope (for now)
 

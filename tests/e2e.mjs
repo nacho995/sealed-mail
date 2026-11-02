@@ -278,6 +278,19 @@ await sendRaw(null);
 await assert.rejects(readBox(Cc, erin.privKey, 'inbox'), /malformed message body/);
 ok('a decrypted body keeps only well-typed fields; one that is not an object is refused');
 
+// A repeated recipient address must not fan one send into several inbox copies.
+{
+  const dupKey = await seal.wrapMessageKey((await seal.encryptBody({ from: erin.email, to: [erin.email], subject: 'd', body: 'd' })).messageKey, await seal.importPublicKey(erin.pubKeyB64));
+  const mk = await seal.encryptBody({ from: erin.email, to: [erin.email], subject: 'dup', body: 'dup' });
+  const ek = await seal.wrapMessageKey(mk.messageKey, await seal.importPublicKey(erin.pubKeyB64));
+  const r = await Cc.req('POST', '/api/messages', { ciphertext: mk.ciphertext, iv: mk.iv, selfEncKey: ek, recipients: Array.from({ length: 10 }, () => ({ email: erin.email, encKey: ek })) });
+  assert.equal(r.status, 200);
+  const inbox = (await Cc.req('GET', '/api/messages?box=inbox')).data.messages.filter((m) => m.id === r.data.id);
+  assert.equal(inbox.length, 1, `a 10x-repeated recipient produced ${inbox.length} inbox copies`);
+  void dupKey;
+}
+ok('a repeated recipient address is delivered to exactly once (no inbox amplification)');
+
 // Look-alike addresses: the part before @ is plain ASCII, so an invisible or
 // Cyrillic character cannot register a second "alice" that reads the same.
 for (const local of [`ali\u200bce${stamp}`, `\u0430lice${stamp}`]) {
