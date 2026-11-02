@@ -153,7 +153,7 @@ function makeClient() {
 let passed = 0;
 function ok(msg) { passed++; console.log('[OK] ' + msg); }
 
-async function register(client, email, password) {
+async function registerRaw(client, email, password) {
   const id = await seal.generateIdentity();
   const pubKey = await seal.exportPublicKey(id.publicKey);
   const pkcs8 = await seal.exportPkcs8(id.privateKey);
@@ -164,6 +164,10 @@ async function register(client, email, password) {
     email, pubKey, saltAuth: pw.saltAuth, saltWrap: pw.saltWrap, authKey: pw.authKey,
     encPrivKey: pw.encPrivKey, privIv: pw.privIv, recovery,
   });
+  return { r, pkcs8, pubKey, code };
+}
+async function register(client, email, password) {
+  const { r, pkcs8, pubKey, code } = await registerRaw(client, email, password);
   assert.equal(r.status, 200, 'register -> ' + JSON.stringify(r.data));
   return { privKey: await seal.importPrivateKey(pkcs8), pubKeyB64: pubKey, email: email.toLowerCase(), code };
 }
@@ -245,6 +249,51 @@ assert.equal((await readBox(A, alice.privKey, 'sent'))[0].body, secret);
 ok("sender decrypted their own Sent copy");
 assert.ok(!ciphertext.includes(secret) && !Buffer.from(ciphertext, 'base64').toString('latin1').includes('servidor'));
 ok('stored ciphertext does not contain the plaintext');
+
+// ---------- issues reported from outside ----------
+// A message body is sealed by whoever sent it, so its JSON can have any shape. The
+// reader keeps only the fields it uses, with the types it expects: a body such as
+// {"from":{"toString":1}} used to throw while the folder was drawn and stop the rest
+// of the mailbox from rendering.
+const erinPw = 'erin-correct-horse-battery-staple';
+// One account mailing itself keeps the sign-up rate limit (10 per IP) in budget.
+const Cc = makeClient();
+const erin = await register(Cc, `erin.d-${stamp}@sealed.local`, erinPw);
+async function sendRaw(content) {
+  const erinKey = await seal.importPublicKey(erin.pubKeyB64);
+  const { messageKey, ciphertext: ct, iv } = await seal.encryptBody(content);
+  const encKey = await seal.wrapMessageKey(messageKey, erinKey);
+  const r = await Cc.req('POST', '/api/messages', { ciphertext: ct, iv, selfEncKey: encKey, recipients: [{ email: erin.email, encKey }] });
+  assert.equal(r.status, 200);
+}
+await sendRaw({ from: { toString: 1 }, to: 'x', subject: 7, body: ['b'], auth: 'pass', attachments: [{ name: {}, size: '1' }, 5] });
+const [crafted] = await readBox(Cc, erin.privKey, 'inbox');
+assert.doesNotThrow(() => `${crafted.from}${crafted.to}${crafted.subject}${crafted.body}`);
+assert.equal(crafted.from, undefined);
+assert.equal(crafted.to, undefined);
+assert.equal(crafted.auth, undefined);
+assert.equal(typeof crafted.attachments[0].name, 'undefined');
+assert.equal(crafted.attachments.length, 2);
+await sendRaw(null);
+await assert.rejects(readBox(Cc, erin.privKey, 'inbox'), /malformed message body/);
+ok('a decrypted body keeps only well-typed fields; one that is not an object is refused');
+
+// Look-alike addresses: the part before @ is plain ASCII, so an invisible or
+// Cyrillic character cannot register a second "alice" that reads the same.
+for (const local of [`ali\u200bce${stamp}`, `\u0430lice${stamp}`]) {
+  const { r } = await registerRaw(makeClient(), `${local}@sealed.local`, 'whatever-password-123');
+  assert.equal(r.status, 400, `${JSON.stringify(local)} must be refused`);
+}
+ok('addresses with invisible or look-alike (non-ASCII) characters are refused at sign-up');
+
+// A malicious server can answer /api/salt with the account's saltWrap. What the
+// browser then sends as authKey must still not open the private key.
+const erinLogin = await loginRaw(makeClient(), erin.email, erinPw);
+assert.equal(erinLogin.r.status, 200);
+const asSentWithWrapSalt = await seal.authKeyHex(erinPw, erinLogin.r.data.saltWrap);
+const asAesKey = await webcrypto.subtle.importKey('raw', Buffer.from(asSentWithWrapSalt, 'hex'), 'AES-GCM', false, ['decrypt']);
+await assert.rejects(seal.decryptPkcs8(erinLogin.r.data.encPrivKey, erinLogin.r.data.privIv, asAesKey));
+ok('the login key derived with the wrapping salt cannot open the private key');
 
 // ---------- attachments ----------
 // Two files: random bytes with a marker inside, and a small text file.

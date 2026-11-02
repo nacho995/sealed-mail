@@ -257,6 +257,10 @@ async function doRegister(email, password) {
   if (!email.toLowerCase().endsWith(`@${state.mailDomain}`)) {
     throw new UserFacingError(`Tu dirección tiene que terminar en @${state.mailDomain}, por ejemplo nombre@${state.mailDomain}.`);
   }
+  // Same rule as the server: ASCII only, so no address can pass for another one.
+  if (!/^[a-z0-9_-]+(?:\.[a-z0-9_-]+)*$/.test(email.toLowerCase().slice(0, -(state.mailDomain.length + 1)))) {
+    throw new UserFacingError('Antes de la @ usa solo letras sin tilde (a-z), números, guion, guion bajo y puntos sueltos.');
+  }
   if (password.length < MIN_PASSWORD) throw new UserFacingError(`La contraseña necesita al menos ${MIN_PASSWORD} caracteres.`);
   const identity = await seal.generateIdentity();
   const pubKey = await seal.exportPublicKey(identity.publicKey);

@@ -50,7 +50,7 @@ nothing on it worth reading, leaking or training a model on.
   the server.
 - **Attachments**, encrypted in the browser like the text (up to 10 files and 10 MB
   per message). The reader checks every file against a hash sealed inside the
-  message, so the server cannot swap one.
+  message, so the server cannot swap one without replacing the whole message.
 - Compose, send, read. Recipient **key fingerprints** for out-of-band verification;
   the sender shown is the one the server authenticated, and a client-claimed
   `from` that disagrees is flagged.
@@ -90,8 +90,9 @@ secret that never leaves his side:
 |---|---|
 | Read stored mail | **No**: ciphertext only |
 | Read mail exchanged with outside addresses | **In transit, yes**: ordinary email is plaintext by nature, so the server holds it in memory while delivering or sealing it. It is never written in the clear |
-| Alter a message unnoticed | **No**: AES-GCM authentication |
-| Learn passwords | **No**: it receives a PBKDF2-derived key and stores `scrypt` of it |
+| Alter a stored message unnoticed | **No**: AES-GCM rejects any change to it |
+| Replace a message with one it sealed itself | **Yes**: it has your public key and messages are not signed, so AES-GCM proves a message was not changed, not who wrote it |
+| Learn passwords | **No**: it receives a key derived with PBKDF2 and then HKDF, and stores `scrypt` of it |
 | Tell which addresses have accounts | **Partly**: login, recovery and passkey sign-in give constant-shape answers (fake salts, usernameless passkeys), but sign-up says when an address is taken and logged-in users can look up recipients |
 | Hand out a fake public key | **Yes**, unless users compare fingerprints |
 | Serve malicious JavaScript | **Yes**: inherent to web-delivered E2E, not solved here |
@@ -111,6 +112,14 @@ the implementer's reasoning. Three audits so far:
 - The third, on attachments, found that mail from outside claiming to be a user could
   exhaust that user's attachment quota, and that a right-to-left override could make
   `fdp.exe` display as `.pdf`.
+
+An outside tester then found three more:
+- A message whose encrypted body had a non-text `from` stopped the recipient's folder from rendering.
+- An invisible character let a second account pass for an existing address.
+- A malicious server could get the private-key wrapping key sent to it by answering
+  the login salt request with the wrapping salt.
+
+The tester also pointed out that the table above overstated what AES-GCM proves.
 
 Every finding was fixed and is covered by a test.
 
@@ -224,7 +233,7 @@ reaches the database, and open-relay refusal), recovery (including two simultane
 recoveries racing for the same code), password re-checks, passkey defences, session
 revocation, encrypted attachments (round trip, a stranger gets 404, a swapped or
 substituted file is rejected, limits and quotas, files in and out by SMTP) and error
-handling: 45 checks. CI runs it on Node 22 and 24.
+handling: 48 checks. CI runs it on Node 22 and 24.
 
 ## Out of scope (for now)
 

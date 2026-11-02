@@ -120,6 +120,17 @@ if (passkeyCols.has('prf_salt')) {
   throw new Error(`${dbPath} uses the pre-release passkey schema. Delete that database (and its -wal/-shm files) and restart.`);
 }
 
+// Schema 2 changed how the login key is derived (authKey = HKDF(PBKDF2(...)), see
+// public/js/crypto.js), so verifiers stored before it can never match again. This is
+// pre-release software, so stop with a clear instruction rather than fail every login.
+const SCHEMA_VERSION = 2;
+if (db.prepare('PRAGMA user_version').get().user_version < SCHEMA_VERSION) {
+  if (db.prepare('SELECT COUNT(*) AS n FROM users').get().n > 0) {
+    throw new Error(`${dbPath} has accounts from before the login-key change. Delete that database (and its -wal/-shm files) and restart.`);
+  }
+  db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+}
+
 // Columns added after the first release, by migration so older databases keep working.
 function addMissingColumns(table, columns) {
   const have = new Set(db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name));

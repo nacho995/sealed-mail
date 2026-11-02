@@ -49,8 +49,14 @@ async function deriveBits(password, saltHex, bits) {
   );
 }
 // authKey: sent to the server as the login secret (server stores only scrypt(authKey)).
+// The PBKDF2 output goes through HKDF before it leaves the browser, so what is sent is
+// never a raw PBKDF2(password, salt). Without that step a malicious server could answer
+// /api/salt with the account's saltWrap and be handed wrapKey itself.
 async function authKeyHex(password, saltAuthHex) {
-  return bufToHex(await deriveBits(password, saltAuthHex, 256));
+  const base = await subtle.importKey('raw', await deriveBits(password, saltAuthHex, 256), 'HKDF', false, ['deriveBits']);
+  return bufToHex(await subtle.deriveBits(
+    { name: 'HKDF', hash: 'SHA-256', salt: enc.encode('sealed-mail'), info: enc.encode('login verifier v2') },
+    base, 256));
 }
 // wrapKey: never leaves the browser; encrypts/decrypts the private key.
 async function wrapKey(password, saltWrapHex) {
@@ -137,10 +143,34 @@ async function encryptBody(obj) {
   const ct = await subtle.encrypt({ name: 'AES-GCM', iv }, messageKey, enc.encode(JSON.stringify(obj)));
   return { messageKey, ciphertext: bufToB64(ct), iv: bufToB64(iv) };
 }
+// A body is written by whoever sealed it (another user, or our SMTP gateway), so its
+// JSON can have any shape. Only the fields the app reads are kept, each with the type
+// it expects (anything else becomes undefined): a crafted body like
+// {"from":{"toString":1}} must not be able to throw while the folder is drawn.
+const str = (v) => (typeof v === 'string' ? v : undefined);
+function cleanBody(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('malformed message body');
+  const body = {
+    from: str(raw.from),
+    to: Array.isArray(raw.to) ? raw.to.filter((t) => typeof t === 'string') : undefined,
+    subject: str(raw.subject),
+    body: str(raw.body),
+  };
+  if (raw.auth && typeof raw.auth === 'object') {
+    body.auth = { spf: str(raw.auth.spf), dkim: str(raw.auth.dkim), dmarc: str(raw.auth.dmarc) };
+  }
+  // Entries keep their position (it is the file's index), even when malformed.
+  if (Array.isArray(raw.attachments)) {
+    body.attachments = raw.attachments.map((a) => (a && typeof a === 'object'
+      ? { name: str(a.name), type: str(a.type), size: Number.isInteger(a.size) ? a.size : undefined, sha256: str(a.sha256) }
+      : null));
+  }
+  return body;
+}
 async function decryptBody(messageKey, ctB64, ivB64) {
   const pt = await subtle.decrypt(
     { name: 'AES-GCM', iv: new Uint8Array(b64ToBuf(ivB64)) }, messageKey, b64ToBuf(ctB64));
-  return JSON.parse(dec.decode(pt));
+  return cleanBody(JSON.parse(dec.decode(pt)));
 }
 // Wrap the AES message key for one recipient's RSA public key.
 async function wrapMessageKey(messageKey, recipientPub) {

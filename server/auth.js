@@ -157,6 +157,10 @@ function requireCsrf(req, res, next) {
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// What may come before the @ of a new account: ASCII letters, digits, "_" and "-", in
+// dot-separated parts. Unicode would let an invisible (U+200B) or look-alike (Cyrillic
+// "а") character register a second address that reads exactly like someone else's.
+const LOCAL_PART_RE = /^[a-z0-9_-]+(?:\.[a-z0-9_-]+)*$/;
 const HEX_RE = /^[0-9a-f]+$/i;
 const B64_RE = /^[A-Za-z0-9+/]+={0,2}$/;
 
@@ -194,6 +198,9 @@ async function register(req, res) {
     // deliver to them, and what stops anyone claiming a gmail.com address here.
     if (!normEmail.endsWith(`@${config.mail.domain}`)) {
       return res.status(400).json({ error: `the address must end in @${config.mail.domain}` });
+    }
+    if (!LOCAL_PART_RE.test(normEmail.slice(0, -(config.mail.domain.length + 1)))) {
+      return res.status(400).json({ error: 'before the @, use only a-z, 0-9, "_", "-" and single dots' });
     }
     if (getUserByEmail.get(normEmail)) {
       // A new account runs scrypt twice (password + recovery verifier); burn the same

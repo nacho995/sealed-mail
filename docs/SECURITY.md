@@ -12,16 +12,20 @@ On registration, the browser:
 1. Generates an **RSA-OAEP 2048** keypair (the account identity).
 2. Derives two independent keys from the password with **PBKDF2-HMAC-SHA256,
    310 000 iterations**, using two different salts:
-   - `authKey = PBKDF2(password, saltAuth)` — sent to the server as the login secret.
+   - `authKey = HKDF(PBKDF2(password, saltAuth), "login verifier v2")` — sent to the
+     server as the login secret.
    - `wrapKey = PBKDF2(password, saltWrap)` — **never leaves the browser**.
 3. Exports the private key, encrypts it with `wrapKey` (**AES-256-GCM**), and uploads
    only that ciphertext.
 4. Uploads the public key in the clear (it is not secret).
 
 The server stores `scrypt(authKey)` (N=16384) as the login verifier — a second,
-memory-hard barrier. Because `authKey` and `wrapKey` use different salts, the value
-the server receives (`authKey`) cannot be used to derive `wrapKey`, so the server
-cannot decrypt the private key it stores.
+memory-hard barrier. Different salts alone do not keep the two keys apart: at login
+the server chooses which salt the browser uses, so a malicious server could answer
+`/api/salt` with `saltWrap` and receive `wrapKey` as the "authKey". The HKDF step
+closes that: whatever salt it is given, the browser never sends a raw PBKDF2 output,
+so the value the server receives cannot open the private key it stores. (Found by an
+outside tester; the e2e suite checks it.)
 
 ## Sending a message
 
@@ -44,8 +48,9 @@ of it.**
   data. A file therefore cannot be presented as another file, or as the body.
 - The body carries, for every file, its name, type, size and **SHA-256**. After
   decrypting a file, the reader checks it against that list and refuses anything that
-  does not match, so the server cannot substitute, reorder or truncate files. It can
-  only withhold one, and the reader then shows the download failing.
+  does not match, so the server cannot substitute, reorder or truncate the files of a
+  message. It can withhold one, and the reader then shows the download failing, or
+  replace the whole message (limitation 4 below).
 - Files are stored apart from the body (`attachments` table), so listing a folder
   does not download them, and are fetched one at a time by whoever the message was
   sent to or by. Anyone else gets the same 404 as for a file that does not exist.
@@ -89,7 +94,11 @@ of it.**
 - **CSP**: `default-src 'self'`, no `unsafe-inline` (the frontend has zero inline
   script/style), `object-src 'none'`, `frame-ancestors 'none'`. This is the main
   barrier against an XSS stealing a message after it is decrypted in the DOM.
-- **Input validation** on every field (email/hex/base64 shape + length caps);
+- **Input validation** on every field (email/hex/base64 shape + length caps). A new
+  address may only use ASCII letters, digits, `_`, `-` and single dots before the `@`,
+  so an invisible (U+200B) or look-alike character cannot make a second account read
+  as an existing one. Decrypted message bodies are checked in the browser too: only
+  known fields of the expected type are kept, because the sender wrote that JSON;
   parameterized SQL everywhere (no string-built queries).
 - Hashing and key derivation on the server use only Node's built-in `crypto`.
   WebAuthn signature verification is delegated to `@simplewebauthn/server`
@@ -217,8 +226,12 @@ These are inherent to browser-delivered E2E and are not bugs to "fix" silently:
    encrypted body is written by the sender's client and is not cryptographically
    bound to anyone. The UI therefore shows the **server-attested** sender
    (`sender_email`, taken from the authenticated session) as authoritative and flags
-   any message whose embedded `from` disagrees. Full origin proof needs message
-   signatures (RSA-PSS / Ed25519); not implemented yet.
+   any message whose embedded `from` disagrees. That attestation comes from the
+   server itself, so it does not hold against a malicious server: it has every
+   recipient's public key and can seal a whole new message (body, files and claimed
+   sender) that opens cleanly. AES-GCM proves a message was not changed after it was
+   sealed, not who sealed it. Full origin proof needs message signatures
+   (RSA-PSS / Ed25519) checked against a verified key; not implemented yet.
 5. **Offline brute force.** An attacker who steals the DB can try passwords against
    `scrypt(authKey)` offline; a cracked password yields `wrapKey` and the mail.
    PBKDF2 (310k) + scrypt slow this down, but **password strength is the ultimate
