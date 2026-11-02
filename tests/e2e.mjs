@@ -291,6 +291,12 @@ ok('a decrypted body keeps only well-typed fields; one that is not an object is 
 }
 ok('a repeated recipient address is delivered to exactly once (no inbox amplification)');
 
+{
+  const r = await fetch(BASE + '/api/config');
+  assert.equal(r.headers.get('cache-control'), 'no-store', 'API responses must be Cache-Control: no-store');
+}
+ok('API responses are marked Cache-Control: no-store');
+
 // Look-alike addresses: the part before @ is plain ASCII, so an invisible or
 // Cyrillic character cannot register a second "alice" that reads the same.
 for (const local of [`ali\u200bce${stamp}`, `\u0430lice${stamp}`]) {

@@ -52,6 +52,11 @@ const jsonWithFilesExternal = express.json({ limit: attachments.MAX_REQUEST_EXTE
 app.use((req, res, next) => (req.method === 'POST' && FILE_ROUTES.has(req.path) ? next() : smallJson(req, res, next)));
 app.use(cookieParser());
 
+// No cache for any API response: they carry per-account data (ciphertext, wrapped
+// keys, the account email) that must never be held by the browser's back/forward
+// cache or a shared intermediary. Static assets set their own Cache-Control below.
+app.use('/api', (req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
+
 // ---- rate limiting ----
 // Key by client network: IPv4 as-is, IPv6 grouped by /64. One subscriber normally
 // gets a whole /64, so per-address keys would let them rotate past every limit.
