@@ -147,12 +147,18 @@ async function encryptBody(obj) {
 // JSON can have any shape. Only the fields the app reads are kept, each with the type
 // it expects (anything else becomes undefined): a crafted body like
 // {"from":{"toString":1}} must not be able to throw while the folder is drawn.
-const str = (v) => (typeof v === 'string' ? v : undefined);
+// Directional formatting characters (bidi overrides/isolates, LRM/RLM) let a sender
+// make text render in a misleading order: "factura‮gnp.exe" shows as
+// "facturaexe.png". Strip them from every displayed field, as the app already does for
+// file names. Newlines and ordinary RTL letters are kept, so legitimate Arabic/Hebrew
+// is unaffected; CSS `unicode-bidi` cannot neutralise an embedded override, only strip.
+const BIDI_CONTROLS = /[‎‏‪-‮⁦-⁩]/g;
+const str = (v) => (typeof v === 'string' ? v.replace(BIDI_CONTROLS, '') : undefined);
 function cleanBody(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('malformed message body');
   const body = {
     from: str(raw.from),
-    to: Array.isArray(raw.to) ? raw.to.filter((t) => typeof t === 'string') : undefined,
+    to: Array.isArray(raw.to) ? raw.to.map(str).filter((t) => typeof t === 'string') : undefined,
     subject: str(raw.subject),
     body: str(raw.body),
   };

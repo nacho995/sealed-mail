@@ -484,8 +484,12 @@ kbd {
 .msg-flag.alert { color: var(--red); }
 .msg-flag.unverified { color: var(--amber); }
 .msg-date { color: var(--faint); font-variant-numeric: tabular-nums; opacity: 0.85; }
-.msg-from { color: var(--fg); }
-.msg-subject { color: var(--dim); }
+/* unicode-bidi: isolate keeps a legitimate RTL sender/subject from reordering the
+   adjacent LTR columns. The dangerous override chars themselves are stripped in
+   crypto.js (cleanBody); this is the same belt-and-braces as .file-name. */
+.msg-from { color: var(--fg); unicode-bidi: isolate; }
+.msg-subject { color: var(--dim); unicode-bidi: isolate; }
+#readSubject, #readBody { unicode-bidi: isolate; }
 .msg.unread .msg-subject, .msg.unread .msg-from { color: var(--fg); font-weight: 600; }
 .msg.sealed .msg-subject { color: var(--faint); letter-spacing: 0.05em; }
 .msg.sealed { cursor: default; }

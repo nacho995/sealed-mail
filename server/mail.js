@@ -34,6 +34,11 @@ function send(req, res) {
   }
   const files = attachments.parseSealed((req.body || {}).attachments);
   if (!files) return res.status(400).json({ error: 'invalid attachments' });
+  // Honour the per-account send-with-files lock: an external send awaiting the relay has
+  // passed its quota check but not yet committed, so storing here now would overshoot.
+  if (files.length && attachments.sendInProgress(req.user.id)) {
+    return res.status(429).json({ error: 'another send with attachments is in progress' });
+  }
   if (attachments.overQuota(req.user.id, files)) return res.status(413).json({ error: 'attachment quota exceeded' });
   if (!Array.isArray(recipients) || recipients.length < 1 || recipients.length > L.recipients) {
     return res.status(400).json({ error: 'invalid recipient list' });

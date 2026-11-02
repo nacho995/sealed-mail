@@ -101,6 +101,17 @@ function inboundOverQuota(userIds, plaintextBytes) {
   return plaintextBytes > 0 && userIds.some((id) => receivedFromOutsideBytes.get(id).total + plaintextBytes > LIMITS.accountBytes);
 }
 
+// At most one attachment-bearing send per account may sit between its quota check and
+// its commit. The external-send path (smtp-out.js) awaits the mail relay in that window;
+// without this lock a concurrent send would pass the same quota check against the same
+// committed state and both commit past the limit (TOCTOU). Internal sends (mail.js) are
+// synchronous — no await between check and insert — so they only honour the lock, never
+// hold it, and so cannot overshoot on their own.
+const sendingWithFiles = new Set();
+const sendInProgress = (userId) => sendingWithFiles.has(userId);
+const beginSendWithFiles = (userId) => { sendingWithFiles.add(userId); };
+const endSendWithFiles = (userId) => { sendingWithFiles.delete(userId); };
+
 // Must run inside the transaction that inserts the message.
 function store(messageId, sealed) {
   sealed.forEach((a, idx) => insertAttachment.run(messageId, idx, a.ciphertext, a.iv, a.ciphertext.length));
@@ -124,4 +135,5 @@ function download(req, res) {
 module.exports = {
   LIMITS, MAX_REQUEST, MAX_REQUEST_EXTERNAL, parseSealed, parsePlain, cleanName, cleanType,
   overQuota, inboundOverQuota, store, download,
+  sendInProgress, beginSendWithFiles, endSendWithFiles,
 };

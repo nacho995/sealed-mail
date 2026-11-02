@@ -40,12 +40,15 @@ const smtpInPort = await freePort();
 // "The outside world": an SMTP server standing in for Gmail's, catching whatever the
 // app sends to external addresses.
 const outsideMail = [];
+// A test can set this to hold the relay ack, so an outbound send is provably still
+// awaiting the relay while another request runs (used by the quota-TOCTOU test).
+let outsideDelayMs = 0;
 const outside = new SMTPServer({
   authOptional: true,
   disabledCommands: ['AUTH', 'STARTTLS'],
   logger: false,
   onData(stream, session, cb) {
-    simpleParser(stream).then((mail) => { outsideMail.push(mail); cb(); }, cb);
+    simpleParser(stream).then((mail) => { outsideMail.push(mail); setTimeout(cb, outsideDelayMs); }, cb);
   },
 });
 const outsidePort = await freePort();
@@ -290,6 +293,19 @@ ok('a decrypted body keeps only well-typed fields; one that is not an object is 
   void dupKey;
 }
 ok('a repeated recipient address is delivered to exactly once (no inbox amplification)');
+
+// A directional-override character in a field must not survive to render in a misleading
+// order (Trojan Source): "factura<U+202E>gnp.exe" would otherwise show as "facturaexe.png".
+// cleanBody strips bidi controls from every decrypted field, as the app does for file names.
+{
+  const mk = await seal.encryptBody({ from: 'a\u202eb@sealed.local', to: ['c\u200ed@sealed.local'], subject: 'factura\u202egnp.exe', body: 'uno\u202edos\ntres' });
+  const got = await seal.decryptBody(mk.messageKey, mk.ciphertext, mk.iv);
+  assert.equal(got.subject, 'facturagnp.exe');
+  assert.equal(got.body, 'unodos\ntres', 'newlines kept, bidi stripped from body');
+  assert.ok(!/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/.test(got.subject + got.body + got.from + got.to.join('')),
+    'bidi controls stripped from every decrypted field');
+}
+ok('directional-override characters are stripped from decrypted fields (no Trojan-Source spoof)');
 
 {
   const r = await fetch(BASE + '/api/config');
@@ -706,6 +722,29 @@ const overQuota3 = await sendWithFiles(A2, alice.email, alice.pubKeyB64, bobEmai
   [{ name: 'd.bin', type: 'application/octet-stream', bytes: randomBytes(9 * 1024 * 1024) }]);
 assert.deepEqual([overQuota.status, overQuota2.status, overQuota3.status], [200, 200, 413], 'the third 9 MB send passes 30 MB');
 ok('the per-account attachment quota counts what the account itself sent');
+
+// Quota TOCTOU: an attachment send must not slip through while another send for the same
+// account is between its quota check and its commit. The external path awaits the relay in
+// that window; hold the relay so the window is open, then fire an internal send-with-files.
+outsideDelayMs = 500;
+{
+  const held = randomBytes(256 * 1024);
+  const heldSealed = await seal.encryptBody({ from: alice.email, to: ['amiga@gmail.com'], subject: 'EnVuelo', body: 'b',
+    attachments: [await seal.describeFile('h.bin', 'application/octet-stream', held)] });
+  const extInFlight = A2.req('POST', '/api/messages/external', {
+    to: 'amiga@gmail.com', subject: 'EnVuelo', body: 'b',
+    files: [{ name: 'h.bin', type: 'application/octet-stream', data: held.toString('base64') }],
+    selfCopy: { ciphertext: heldSealed.ciphertext, iv: heldSealed.iv, encKey: await seal.wrapMessageKey(heldSealed.messageKey, alicePubKey),
+      attachments: [await seal.encryptAttachment(heldSealed.messageKey, held, 0)] },
+  });
+  await new Promise((r) => setTimeout(r, 80)); // the external send is now awaiting the held relay
+  const concurrent = await sendWithFiles(A2, alice.email, alice.pubKeyB64, bobEmail, 'Simultaneo',
+    [{ name: 's.bin', type: 'application/octet-stream', bytes: randomBytes(1024) }]);
+  assert.equal(concurrent.status, 429, `internal send with files during an in-flight external send must be 429, got ${concurrent.status}`);
+  assert.equal((await extInFlight).status, 200, 'the external send itself should still succeed');
+}
+outsideDelayMs = 0;
+ok('an attachment send is refused while another is between quota-check and commit (no quota TOCTOU)');
 
 assert.equal((await A2.req('POST', '/api/messages/external', { to: bobEmail, subject: 's', body: 'b', selfCopy })).status, 400);
 assert.equal((await A2.req('POST', '/api/messages/external', { to: 'a@gmail.com', subject: 'x\r\nBcc: v@evil.com', body: 'b', selfCopy })).status, 400);
