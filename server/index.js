@@ -19,7 +19,7 @@ const app = express();
 app.disable('x-powered-by');
 // Only trust X-Forwarded-* in production (where a reverse proxy sets them). Trusting
 // them when directly exposed would let a client spoof its IP and defeat rate limits.
-app.set('trust proxy', config.isProd ? 1 : false);
+app.set('trust proxy', config.isProd ? config.trustProxyHops : false);
 
 // Strict Content-Security-Policy: everything is same-origin and there is NO inline
 // script or style anywhere in the frontend, so 'unsafe-inline' is not needed. This

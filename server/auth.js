@@ -149,8 +149,12 @@ function requireAuth(req, res, next) {
 function requireCsrf(req, res, next) {
   const header = req.get('x-csrf-token');
   const cookie = req.cookies && req.cookies.csrf;
-  if (!header || !cookie || header.length !== cookie.length ||
-      !crypto.timingSafeEqual(Buffer.from(header), Buffer.from(cookie))) {
+  // Compare on the BYTE buffers and guard their length first: timingSafeEqual throws on
+  // a length mismatch, which for a multibyte header of equal character length would
+  // surface as a 500 instead of a clean 403. (The real token is 64 hex ASCII chars.)
+  const a = Buffer.from(String(header || ''));
+  const b = Buffer.from(String(cookie || ''));
+  if (!header || !cookie || a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
     return res.status(403).json({ error: 'bad csrf token' });
   }
   next();

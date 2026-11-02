@@ -746,6 +746,32 @@ outsideDelayMs = 500;
 outsideDelayMs = 0;
 ok('an attachment send is refused while another is between quota-check and commit (no quota TOCTOU)');
 
+// F4: a CSRF header with the same character length but a different byte length (a
+// multibyte char) used to make timingSafeEqual throw -> 500. It must be a clean 403.
+{
+  const badCsrf = 'n'.repeat(A2.jar.csrf.length - 1) + '\u00f1'; // same char length, one extra byte
+  const r = await fetch(`${BASE}/api/messages/1/read`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: `sid=${A2.jar.sid}; csrf=${A2.jar.csrf}`, 'x-csrf-token': badCsrf },
+    body: '{}',
+  });
+  assert.equal(r.status, 403, `a malformed multibyte CSRF token must be 403, got ${r.status}`);
+}
+ok('a malformed multibyte CSRF token is rejected cleanly (403, not 500)');
+
+// F5: wrapMessageKey binds the wrap to a purpose via an RSA-OAEP label. Decrypting our
+// OWN wrap without that label must fail; without the binding it would succeed. This is
+// what proves the label is actually in effect (a mere label mismatch fails either way).
+{
+  const mk = await webcrypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
+  const wrapped = await seal.wrapMessageKey(mk, await seal.importPublicKey(alice.pubKeyB64));
+  await assert.rejects(
+    webcrypto.subtle.decrypt({ name: 'RSA-OAEP' }, alice.privKey, Buffer.from(wrapped, 'base64')),
+    'a purpose-bound message-key wrap must not decrypt without its label');
+  assert.ok(await seal.unwrapMessageKey(wrapped, alice.privKey), 'our own unwrap (with the label) still works');
+}
+ok('key wraps are purpose-bound (our wrap does not decrypt without its label)');
+
 assert.equal((await A2.req('POST', '/api/messages/external', { to: bobEmail, subject: 's', body: 'b', selfCopy })).status, 400);
 assert.equal((await A2.req('POST', '/api/messages/external', { to: 'a@gmail.com', subject: 'x\r\nBcc: v@evil.com', body: 'b', selfCopy })).status, 400);
 assert.equal((await A2.req('POST', '/api/messages/external', { to: 'a@gmail.com', subject: 's', body: 'b', selfCopy }, { csrf: false })).status, 403);

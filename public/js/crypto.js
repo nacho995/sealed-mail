@@ -13,6 +13,13 @@ const PBKDF2_ITERS = 310000; // OWASP-range for PBKDF2-HMAC-SHA256 (2023+)
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
+// Purpose labels bound into the two key wraps as AEAD additional data (AES-GCM) and
+// RSA-OAEP label. They tie each ciphertext to its role, so a blob lifted from one slot
+// cannot be fed into another: it fails as a clean authenticated-decryption error rather
+// than surfacing later as a bad key import. Must match server/sealing.js byte for byte.
+const PRIVKEY_AAD = enc.encode('sealed-mail private-key v1');
+const MSGKEY_LABEL = enc.encode('sealed-mail message-key v1');
+
 // ---- encoding helpers ----
 function bufToB64(buf) {
   const bytes = new Uint8Array(buf);
@@ -90,11 +97,11 @@ async function importPrivateKey(pkcs8) {
 }
 async function encryptPkcs8(pkcs8, aesWrapKey) {
   const iv = window.crypto.getRandomValues(new Uint8Array(12));
-  const ct = await subtle.encrypt({ name: 'AES-GCM', iv }, aesWrapKey, pkcs8);
+  const ct = await subtle.encrypt({ name: 'AES-GCM', iv, additionalData: PRIVKEY_AAD }, aesWrapKey, pkcs8);
   return { encPrivKey: bufToB64(ct), privIv: bufToB64(iv) };
 }
 async function decryptPkcs8(encB64, ivB64, aesWrapKey) {
-  return subtle.decrypt({ name: 'AES-GCM', iv: new Uint8Array(b64ToBuf(ivB64)) }, aesWrapKey, b64ToBuf(encB64));
+  return subtle.decrypt({ name: 'AES-GCM', iv: new Uint8Array(b64ToBuf(ivB64)), additionalData: PRIVKEY_AAD }, aesWrapKey, b64ToBuf(encB64));
 }
 async function decryptPrivateKey(encB64, ivB64, aesWrapKey) {
   return importPrivateKey(await decryptPkcs8(encB64, ivB64, aesWrapKey));
@@ -181,10 +188,10 @@ async function decryptBody(messageKey, ctB64, ivB64) {
 // Wrap the AES message key for one recipient's RSA public key.
 async function wrapMessageKey(messageKey, recipientPub) {
   const raw = await subtle.exportKey('raw', messageKey);
-  return bufToB64(await subtle.encrypt({ name: 'RSA-OAEP' }, recipientPub, raw));
+  return bufToB64(await subtle.encrypt({ name: 'RSA-OAEP', label: MSGKEY_LABEL }, recipientPub, raw));
 }
 async function unwrapMessageKey(encKeyB64, myPriv) {
-  const raw = await subtle.decrypt({ name: 'RSA-OAEP' }, myPriv, b64ToBuf(encKeyB64));
+  const raw = await subtle.decrypt({ name: 'RSA-OAEP', label: MSGKEY_LABEL }, myPriv, b64ToBuf(encKeyB64));
   return subtle.importKey('raw', raw, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
 }
 

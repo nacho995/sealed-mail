@@ -84,7 +84,10 @@ of it.**
   password re-checks, passkey sign-in, general API), so one busy flow cannot lock
   people out of another. IPv6 clients are grouped by `/64`. Recovery and password
   re-checks also have a per-account cap. `scrypt` runs at most 4 at a time with a
-  bounded queue, so unauthenticated requests cannot exhaust CPU or memory.
+  bounded queue, so unauthenticated requests cannot exhaust CPU or memory. The per-IP
+  keying trusts `X-Forwarded-For` only in production, for exactly `TRUST_PROXY_HOPS`
+  hops (default 1): set it to the real number of reverse proxies in front of the app,
+  or a client could spoof its address and slip the per-IP limits.
 - **Secrets**: the server refuses to start with a missing, weak (< 128-bit hex) or
   placeholder `SESSION_SECRET`, because a known secret would let anyone recompute the
   anti-enumeration fake salts. In production it also refuses to start without an
@@ -198,9 +201,13 @@ biometric data at all.
   Someone who polls an address over time can therefore tell that it exists and that
   its credentials changed. This adds to the metadata that is already visible (point 6
   below).
-- **Not done yet (low value, noted from the audit)**: binding each AES-GCM wrap to
-  its purpose with associated data (it would turn swapped blobs into clean decrypt
-  failures), and an in-app notice when a new passkey is added.
+- **Key wraps are purpose-bound**: the private-key blob is AES-GCM-encrypted with the
+  additional data `sealed-mail private-key v1`, and each message key is RSA-OAEP-wrapped
+  under the label `sealed-mail message-key v1` (attachments already use a positional
+  AAD). A blob lifted from one slot into another therefore fails as a clean
+  authenticated-decryption error instead of surfacing later as a bad key import.
+- **Not done yet (low value, noted from the audit)**: an in-app notice when a new
+  passkey is added.
 
 ## Honest limitations
 
